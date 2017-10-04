@@ -5,7 +5,21 @@
 #include <fstream>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <netdb.h>
+#include <err.h>
+#include <ctype.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <ctime>
+
 using namespace std;
+
+#define BUFFER	(512)
+#define QUEUE	(2)
+
+int listenfd;
 
 /**
  * @brief      Function for printing help and exiting whole program
@@ -88,7 +102,8 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
     	}
     }
 
-    if (reset && (port == -1 || authFile == "" || maildirPath == "") && !(port == -1 && authFile == "" && maildirPath == "")) {
+    if (reset && argumentsCount > 2) {
+    	std::cout << "SOM TU" << endl;
     	if (port == -1) {
     		fprintf(stderr,"ERROR: Argument -p (port) is not given\n");
     	} else if (authFile == "") {
@@ -97,7 +112,7 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
     		fprintf(stderr,"ERROR: Path to Maildir through the parameter -d is not given\n");
     	}
     	exit(EXIT_FAILURE);	
-    } else if (!reset && (port == -1 || authFile == "" || maildirPath == "")) {
+    } else if ((port == -1 || authFile == "" || maildirPath == "") && !reset) {
     	fprintf(stderr,"ERROR: Wrong parrameters, use --help for further information about parameters usage\n");
     	exit(EXIT_FAILURE);
     }
@@ -151,7 +166,6 @@ std::string getFileContent(std::string fileName) {
 	if (fp != NULL) {
 		while(1) {
 			c = fgetc(fp);
-			std::cout << c << endl;
 			if( feof(fp) )
 			{ 
 				break ;
@@ -163,6 +177,66 @@ std::string getFileContent(std::string fileName) {
 	return content;
 }
 
+/**
+ * @brief      Function for getting hostname represented as std::string
+ *
+ * @return     The host name string.
+ */
+std::string getHostNameStr() {
+	char hostname[100];
+	gethostname(hostname, 100);
+	return hostname;
+}
+
+/**
+ * @brief      FUunction for getting current timestamp (number of seconds passed from 1.1.1970)
+ * 
+ * @author     Grayson Koonce (https://graysonkoonce.com/getting-a-unix-timestamp-in-cpp/)
+ * @return     Current timestamp in unix format
+ */
+long int unix_timestamp() {
+	time_t t = std::time(0);
+	long int now = static_cast<long int> (t);
+	return now;
+}
+
+
+std::string getTimestamp() {
+	return "<"+std::to_string(getpid())+"."+std::to_string(unix_timestamp())+"@"+getHostNameStr()+">";
+}
+
+void *service(void *threadid) {
+	int n, r, connectfd;
+	char buf[BUFFER];
+	std::cout << "=====Toto je nove vlakno!=====" << endl;
+
+	while (1) {
+		printf("accept(...)\n");
+		if ((connectfd = accept(listenfd, NULL, NULL)) == -1)
+			err(1, "accept()");
+		// sockinfo("service(...): %s/%d -> %s/%d\n", connectfd);
+		std::string welcomeMsg = "+OK POP3 server ready " + getTimestamp();
+		write(connectfd, welcomeMsg.c_str(), welcomeMsg.length());
+		while ((n = read(connectfd, buf, BUFFER)) > 0) {
+			for (r = 0; r < n; r++) {
+				if (islower(buf[r]))
+					buf[r] = toupper(buf[r]);
+				else if (isupper(buf[r]))
+					buf[r] = tolower(buf[r]);
+			}
+			r = write(connectfd, buf, n);
+			if (r == -1)
+				err(1, "write()");
+			if (r != n)
+				errx(1, "write(): Buffer written just partially");
+		}
+		if (n == -1)
+			err(1, "read()");
+		printf("close(connectfd)\n");
+		close(connectfd);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	std::string authFile("");
@@ -171,10 +245,47 @@ int main(int argc, char *argv[])
 	std::string maildirPath("");
 	bool reset = false;
 	handleArguments(argc, argv, authFile, clearPass, port, maildirPath, reset);
+
+	if (authFile != "") {
+		std::string authFileContent = getFileContent(authFile);
+	}
+
+
+	/*=============================================================*/
+	struct sockaddr_in server;
+	struct hostent *hostent;
+	struct servent *servent;
+
+	memset(&server, 0, sizeof(server));
+	server.sin_family = AF_INET;
+	char hostname[100];
+	gethostname(hostname, 100);
+	if ((hostent = gethostbyname(hostname)) == NULL) {
+		errx(1, "gethostbyname(): %s", hstrerror(h_errno));
+	}
+	memcpy(&server.sin_addr, hostent->h_addr, hostent->h_length);
+	server.sin_port = htons((uint16_t) port);
+
+	printf("socket(...)\n");
+	if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+		err(1, "socket()");
+
+	printf("bind(...)\n");
+	if (bind(listenfd, (struct sockaddr *)&server, sizeof(server)) == -1)
+		err(1, "bind()");
+
+	printf("listen(..., %d)\n", QUEUE);
+	if (listen(listenfd, QUEUE) == -1)
+		err(1, "listen()");
+
+	pthread_t recievingThread;
+	int thread_ret_code;
+	thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)NULL);
+
+	while(1) {
+		;
+	}
 	
-	std::string authFileContent = getFileContent(authFile);
-	std::cout << "--->" << getUsername(authFileContent) << "<---" << endl;
-	std::cout << "--->" << getPassword(authFileContent) << "<---";
-	
+	/*=============================================================*/
 	return 0;
 }
