@@ -13,13 +13,20 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ctime>
+#include <fcntl.h>
 
 using namespace std;
 
 #define BUFFER	(512)
+#ifndef MAX_BUFFER_SIZE
+#define MAX_BUFFER_SIZE (2)
+#endif
 #define QUEUE	(2)
 
-int listenfd;
+typedef struct argumentsForThreadStructure {
+	int acceptedSockDes;
+} argsToThread;
+
 
 /**
  * @brief      Function for printing help and exiting whole program
@@ -189,7 +196,7 @@ std::string getHostNameStr() {
 }
 
 /**
- * @brief      FUunction for getting current timestamp (number of seconds passed from 1.1.1970)
+ * @brief      Function for getting current timestamp (number of seconds passed from 1.1.1970)
  * 
  * @author     Grayson Koonce (https://graysonkoonce.com/getting-a-unix-timestamp-in-cpp/)
  * @return     Current timestamp in unix format
@@ -200,41 +207,35 @@ long int unix_timestamp() {
 	return now;
 }
 
-
+/**
+ * @brief      Gets the timestamp for initial message
+ *
+ * @return     The timestamp.
+ */
 std::string getTimestamp() {
 	return "<"+std::to_string(getpid())+"."+std::to_string(unix_timestamp())+"@"+getHostNameStr()+">";
 }
 
 void *service(void *threadid) {
 	int n, r, connectfd;
-	char buf[BUFFER];
-	std::cout << "=====Toto je nove vlakno!=====" << endl;
+	char buf[MAX_BUFFER_SIZE];
 
-	while (1) {
-		printf("accept(...)\n");
-		if ((connectfd = accept(listenfd, NULL, NULL)) == -1)
-			err(1, "accept()");
-		// sockinfo("service(...): %s/%d -> %s/%d\n", connectfd);
-		std::string welcomeMsg = "+OK POP3 server ready " + getTimestamp();
-		write(connectfd, welcomeMsg.c_str(), welcomeMsg.length());
-		while ((n = read(connectfd, buf, BUFFER)) > 0) {
-			for (r = 0; r < n; r++) {
-				if (islower(buf[r]))
-					buf[r] = toupper(buf[r]);
-				else if (isupper(buf[r]))
-					buf[r] = tolower(buf[r]);
-			}
-			r = write(connectfd, buf, n);
-			if (r == -1)
-				err(1, "write()");
-			if (r != n)
-				errx(1, "write(): Buffer written just partially");
-		}
-		if (n == -1)
-			err(1, "read()");
-		printf("close(connectfd)\n");
-		close(connectfd);
+	std::cout << "New thread" << std::endl;
+
+	struct argumentsForThreadStructure *my_data;
+	my_data = (struct argumentsForThreadStructure *) threadid;
+
+	while ((n = read(my_data->acceptedSockDes, buf, MAX_BUFFER_SIZE)) > 0) {
+		r = write(my_data->acceptedSockDes, buf, n);
+		if (r == -1)
+			err(1, "write()");
+		if (r != n)
+			errx(1, "write(): Buffer written just partially");
 	}
+	if (n == -1)
+		err(1, "read()");
+	printf("close(connectfd)\n");
+	close(my_data->acceptedSockDes);
 }
 
 int main(int argc, char *argv[])
@@ -252,9 +253,10 @@ int main(int argc, char *argv[])
 
 
 	/*=============================================================*/
+	int listenfd;
+	
 	struct sockaddr_in server;
 	struct hostent *hostent;
-	struct servent *servent;
 
 	memset(&server, 0, sizeof(server));
 	server.sin_family = AF_INET;
@@ -267,25 +269,114 @@ int main(int argc, char *argv[])
 	server.sin_port = htons((uint16_t) port);
 
 	printf("socket(...)\n");
-	if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+	if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
 		err(1, "socket()");
+	}
+
+	int flags = fcntl(listenfd, F_GETFL, 0);
+	if (flags < 0) {
+		fprintf(stderr,"ERROR: Problem with setting socket in non blocking mode (couldn't get socket flags).\n");
+		exit(EXIT_FAILURE);
+	}
+	fcntl(listenfd, F_SETFL, flags);
 
 	printf("bind(...)\n");
-	if (bind(listenfd, (struct sockaddr *)&server, sizeof(server)) == -1)
+	if (bind(listenfd, (struct sockaddr *)&server, sizeof(server)) == -1) {
 		err(1, "bind()");
+	}
 
 	printf("listen(..., %d)\n", QUEUE);
-	if (listen(listenfd, QUEUE) == -1)
+	if (listen(listenfd, QUEUE) == -1) {
 		err(1, "listen()");
-
-	pthread_t recievingThread;
-	int thread_ret_code;
-	thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)NULL);
-
-	while(1) {
-		;
 	}
+
 	
+	/**------------------------------------------------------------**/
+	/**------------------This part is inspired by------------------**/
+	/**--------http://developerweb.net/viewtopic.php?id=2933-------**/
+	/**------------------------------------------------------------**/
+	fd_set readset, tempset;
+	int maxfd;
+	int peersock, j, result, result1, sent;
+	unsigned int len;
+	timeval tv;
+	char buffer[MAX_BUFFER_SIZE+1];
+	sockaddr_in addr;
+
+	/* Here should go the code to create the server socket bind it to a port and call listen
+	    listenfd = socket(...);
+	    bind(listenfd ...);
+	    listen(listenfd ...);
+	*/
+
+	FD_ZERO(&readset);
+	FD_SET(listenfd, &readset);
+	maxfd = listenfd;
+
+	do {
+		memcpy(&tempset, &readset, sizeof(tempset));
+		tv.tv_sec = 30;
+		tv.tv_usec = 0;
+		result = select(maxfd + 1, &tempset, NULL, NULL, &tv);
+
+		if (result == 0) {
+			printf("select() timed out!\n");
+		}
+		else if (result < 0 && errno != EINTR) {
+			printf("Error in select(): %s\n", strerror(errno));
+		}
+		else if (result > 0) {
+
+			if (FD_ISSET(listenfd, &tempset)) {
+				len = sizeof(addr);
+				peersock = accept(listenfd, (struct sockaddr *) &addr, &len);
+				if (peersock < 0) {
+					printf("Error in accept(): %s\n", strerror(errno));
+				}
+				else {
+					FD_SET(peersock, &readset);
+					maxfd = (maxfd < peersock)?peersock:maxfd;
+				}
+
+				std::string welcomeMsg = "+OK POP3 server ready " + getTimestamp() + "\r\n";
+				write(peersock, welcomeMsg.c_str(), welcomeMsg.length());
+				
+				FD_CLR(listenfd, &tempset);
+			}
+
+
+			for (j=0; j<maxfd+1; j++) {
+				
+
+				if (FD_ISSET(j, &tempset)) {
+
+					//Going to fill structure that I am going to send to thread
+					argsToThread threadArgs;
+					threadArgs.acceptedSockDes = peersock;
+
+					pthread_t recievingThread;
+					int thread_ret_code;
+					if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)&threadArgs)) != 0) {
+						// TODO - co robit v takomto pripade?
+						// Mozno poslat pripojenemu uzivatelovi, nech sa pripoji znova a odpojit ho?
+						// Zatial vypisujem hlasku a koncim cely server
+						fprintf(stderr,"ERROR: Couldn't create new thread for new connection\n");
+						exit(EXIT_FAILURE);
+					}
+					
+					FD_CLR(j, &readset);
+
+	         }      // end if (FD_ISSET(j, &tempset))
+	      }      // end for (j=0;...)
+	   }      // end else if (result > 0)
+	} while (1);
+	/**------------------------------------------------------------**/
+	/**------------------End of part inspired by-------------------**/
+	/**--------http://developerweb.net/viewtopic.php?id=2933-------**/
+	/**------------------------------------------------------------**/
+
+
+
 	/*=============================================================*/
 	return 0;
 }
