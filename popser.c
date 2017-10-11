@@ -19,13 +19,50 @@ using namespace std;
 
 #define BUFFER	(512)
 #ifndef MAX_BUFFER_SIZE
-#define MAX_BUFFER_SIZE (2)
+#define MAX_BUFFER_SIZE (512)
 #endif
 #define QUEUE	(2)
 
+typedef enum {
+	cmd_user,
+	cmd_pass,
+	cmd_apop,
+	cmd_list,
+	cmd_stat,
+	cmd_retr,
+	cmd_unknown
+} CommandName;
+
+
+typedef enum {
+	state_USER_REQUIRED,
+	state_PASSWORD_REQUIRED,
+	state_TRANSACTION,
+	state_UPDATE
+} SessionState;
+
+
+typedef struct programParameters {
+	std::string authFile;
+	bool clearPass;
+	int port;
+	std::string maildirPath;
+	bool reset;
+} Parameters;
+
 typedef struct argumentsForThreadStructure {
 	int acceptedSockDes;
+	SessionState sessionState;
+	Parameters* params;
+
 } argsToThread;
+
+typedef struct cmd {
+	CommandName name;
+	std::string firstArg;
+	std::string secondArg;
+} Command;
+
 
 
 /**
@@ -108,6 +145,7 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
     		break;
     	}
     }
+
 
     if (reset && argumentsCount > 2) {
     	std::cout << "SOM TU" << endl;
@@ -196,6 +234,22 @@ std::string getHostNameStr() {
 }
 
 /**
+ * @brief      Uppercases given text
+ *
+ * @param[in]  toBeUppercased  To be uppercased
+ *
+ * @return     The uppercased text
+ */
+std::string uppercase(std::string toBeUppercased) {
+	std::string toBeReturned("");
+	
+	for (unsigned int i = 0; i < toBeUppercased.length(); ++i) {
+		toBeReturned += (char) toupper(toBeUppercased.at(i));
+	}
+	return toBeReturned;
+}
+
+/**
  * @brief      Function for getting current timestamp (number of seconds passed from 1.1.1970)
  * 
  * @author     Grayson Koonce (https://graysonkoonce.com/getting-a-unix-timestamp-in-cpp/)
@@ -216,39 +270,129 @@ std::string getTimestamp() {
 	return "<"+std::to_string(getpid())+"."+std::to_string(unix_timestamp())+"@"+getHostNameStr()+">";
 }
 
+
+bool checkForSpaceAfterCommand(std::string message) {
+	return (message.substr(4,1) == " ") ? true : false;
+}
+
+Command getCommand(std::string message) {
+	std::string usersCommand = uppercase(message.substr(0,4)); // TODO - osetri, ak pride prikaz s dlzkou menej ako 4
+	                                                           // TODO - moze byt aj prikaz TOP, ten ma len 3 znaky	
+	Command toBeReturned;
+	if (usersCommand == "USER" && checkForSpaceAfterCommand(message)) {
+		toBeReturned.name = cmd_user;
+		toBeReturned.firstArg = message.substr(5, message.length()-7);
+		toBeReturned.secondArg.clear();
+		return toBeReturned;
+	} else if (usersCommand == "PASS" && checkForSpaceAfterCommand(message)) {
+		toBeReturned.name = cmd_pass;
+		toBeReturned.firstArg = message.substr(5, message.length()-7);
+		toBeReturned.secondArg.clear();
+		return toBeReturned;
+	}
+
+	//In case it is unknown command
+	toBeReturned.name = cmd_unknown;
+	toBeReturned.firstArg.clear();
+	toBeReturned.secondArg.clear();
+	return toBeReturned;
+
+}
+
+std::string process_message(std::string message, ssize_t n, argumentsForThreadStructure* threadArgs) {
+	std::cout << "I have read " << n << "B: --->" << message << "<---" << std::endl;
+	std::cout << getCommand(message).name << std::endl;
+	std::string toBeReturned("");
+	Command actualCommand = getCommand(message);
+	
+	switch(threadArgs->sessionState) {
+		case state_USER_REQUIRED:
+			if (getCommand(message).name == cmd_user) {
+				if (getUsername(getFileContent(threadArgs->params->authFile)) == actualCommand.firstArg) {	// TODO - citanie suborov je mozne len raz
+					toBeReturned = "+OK\r\n";
+					threadArgs->sessionState = state_PASSWORD_REQUIRED;
+				} else {
+					// Autentizacia zlyhala, vraciam error
+					toBeReturned = "-ERR\r\n";
+					//TODO	co teraz? Mam daneho usera odpojit? Alebo len ostat v stave, ktory vyzaduje meno?
+					//		momentalne ostavam v stave vyzadujucom meno
+				}
+			} else {
+				// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user
+				toBeReturned = "-ERR\r\n";
+			}
+			break;
+		case state_PASSWORD_REQUIRED:
+			if (getCommand(message).name == state_PASSWORD_REQUIRED) {
+				if (getPassword(getFileContent(threadArgs->params->authFile)) == actualCommand.firstArg) {	// TODO - citanie suborov je mozne len raz
+					toBeReturned = "+OK\r\n";
+					threadArgs->sessionState = state_TRANSACTION;
+				} else {
+					threadArgs->sessionState = state_USER_REQUIRED;
+					toBeReturned = "-ERR\r\n";
+				}
+			} else {
+				// som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
+				threadArgs->sessionState = state_USER_REQUIRED;
+				toBeReturned = "-ERR\r\n";
+			}
+			break;
+
+		default:
+			break;
+	}
+	return toBeReturned;
+}
+
 void *service(void *threadid) {
 	int n, r, connectfd;
 	char buf[MAX_BUFFER_SIZE];
+	std::string recievedMessage("");
+	struct argumentsForThreadStructure *my_data = (struct argumentsForThreadStructure *) threadid;
 
 	std::cout << "New thread" << std::endl;
-
-	struct argumentsForThreadStructure *my_data;
-	my_data = (struct argumentsForThreadStructure *) threadid;
+	std::cout << "authorisation file is --->" << my_data->params->authFile << "<---" << std::endl;
 
 	while ((n = read(my_data->acceptedSockDes, buf, MAX_BUFFER_SIZE)) > 0) {
-		r = write(my_data->acceptedSockDes, buf, n);
+		for (int i = 0; i < n; ++i) {
+			recievedMessage += buf[i];
+		}
+		std::string response = process_message(recievedMessage, n, my_data);
+		
+		std::cout << "My actual state is " << my_data->sessionState << std::endl;
+
+		r = write(my_data->acceptedSockDes, response.c_str(), response.length());
+		recievedMessage.clear();
 		if (r == -1)
 			err(1, "write()");
-		if (r != n)
+		if (r != response.length())
 			errx(1, "write(): Buffer written just partially");
 	}
 	if (n == -1)
 		err(1, "read()");
+
+
 	printf("close(connectfd)\n");
 	close(my_data->acceptedSockDes);
 }
 
 int main(int argc, char *argv[])
 {
-	std::string authFile("");
-	bool clearPass = false;
-	int port = 0;
-	std::string maildirPath("");
-	bool reset = false;
-	handleArguments(argc, argv, authFile, clearPass, port, maildirPath, reset);
+	
+	Parameters params;
+	params.authFile.clear();
+	params.clearPass = false;
+	params.port = 0;
+	params.maildirPath.clear();
+	params.reset = false;
 
-	if (authFile != "") {
-		std::string authFileContent = getFileContent(authFile);
+	handleArguments(argc, argv, params.authFile, params.clearPass, params.port, params.maildirPath, params.reset);
+
+
+
+
+	if (params.authFile != "") {
+		std::string authFileContent = getFileContent(params.authFile);
 	}
 
 
@@ -266,7 +410,7 @@ int main(int argc, char *argv[])
 		errx(1, "gethostbyname(): %s", hstrerror(h_errno));
 	}
 	memcpy(&server.sin_addr, hostent->h_addr, hostent->h_length);
-	server.sin_port = htons((uint16_t) port);
+	server.sin_port = htons((uint16_t) params.port);
 
 	printf("socket(...)\n");
 	if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
@@ -353,6 +497,8 @@ int main(int argc, char *argv[])
 					//Going to fill structure that I am going to send to thread
 					argsToThread threadArgs;
 					threadArgs.acceptedSockDes = peersock;
+					threadArgs.params = &params;
+					threadArgs.sessionState = state_USER_REQUIRED;
 
 					pthread_t recievingThread;
 					int thread_ret_code;
