@@ -15,7 +15,8 @@
 #include <ctime>
 #include <fcntl.h>
 #include <cstring>
-
+#include <vector>
+#include <dirent.h>
 #include "md5.h"
 
 using namespace std;
@@ -53,6 +54,8 @@ typedef struct programParameters {
 	int port;
 	std::string maildirPath;
 	bool reset;
+	std::string username;
+	std::string password;
 } Parameters;
 
 typedef struct argumentsForThreadStructure {
@@ -60,8 +63,7 @@ typedef struct argumentsForThreadStructure {
 	SessionState sessionState;
 	std::string timestamp;
 	Parameters* params;
-
-} argsToThread;
+} ArgsToThread;
 
 typedef struct cmd {
 	CommandName name;
@@ -69,6 +71,11 @@ typedef struct cmd {
 	std::string secondArg;
 } Command;
 
+typedef struct emails {
+	std::string fileName;
+	uint size;
+
+} EmailsStruct;
 
 
 /**
@@ -92,7 +99,6 @@ int fileExists(std::string strFileName) {
 	}
 	return 0;
 }
-
 /**
  * @brief      Checks, whether exists the folder of given name.
  *
@@ -140,6 +146,7 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
     		break;
     		case 'd':
     		maildirPath = optarg;
+
     		break;
     		case 'c':
     		clearPass = true;
@@ -276,6 +283,151 @@ std::string getTimestamp() {
 	return "<"+std::to_string(getpid())+"."+std::to_string(unix_timestamp())+"@"+getHostNameStr()+">";
 }
 
+/**
+ * @brief      Lists all files of given directory except "." and ".."
+ *
+ * @param[in]  name  The path to the directory to be read
+ * @param      v     Vector of strings where the file names should be saved in
+ * @author     http://www.martinbroadhurst.com/list-the-files-in-a-directory-in-c.html
+ */
+void readDirectory(const std::string& name, std::vector<std::string>& v) {
+	if (directoryExists(name) != 1) {
+		// TODO - sprav co sa stane ak sa nenajde dany adresar, toto je asi dumb
+		return;
+	}
+	DIR* dirp = opendir(name.c_str());
+	struct dirent * dp;
+	while ((dp = readdir(dirp)) != NULL) {
+		if (strcmp(dp->d_name, "..") != 0 && strcmp(dp->d_name, ".") != 0) {
+			v.push_back(dp->d_name);
+		}
+	}
+	closedir(dirp);
+}
+
+/**
+ * @brief      Splits a filename.
+ *
+ * @param[in]  str   The string
+ */
+std::string SplitFilename (std::string str) {
+	return str.substr(str.find_last_of("/\\")+1);
+}
+
+/**
+ * @brief      Gets the file size.
+ *
+ * @return     The file size.
+ */
+std::ifstream::pos_type filesize(const char* filename) {
+	std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
+	return in.tellg(); 
+}
+
+/**
+ * @brief      Moves a specified file to specified destination
+ *
+ * @param[in]  file  The file to be moved
+ * @param[in]  dest  The destination of the moved file
+ *
+ * @return     int   0 if everything proceeded correctly
+ *                   1 if file to be moved cannot be open
+ *                   2 if the file to be moved does not exist
+ *                   3 if the new file file cannot be open
+ *                   4 if there is already the file with the same name on destination
+ *                   5 if there is error while deleting the file to be moved
+ */
+int moveFile(std::string file, std::string dest) {
+	std::string fileName = SplitFilename(file);
+	std::vector<char> fileContent;
+   //TODO - it would be nice to check whether the new file has the same size as the new one has
+   // At first, reading the file and pushing it to the vector of chars.
+	if (fileExists(file)) {
+		if (fileExists(file)) {
+			FILE *fp;
+			int c;
+			fp = fopen(file.c_str(),"rb");
+			if (fp != NULL) {
+				while(1) {
+					c = fgetc(fp);
+					if( feof(fp) ) { 
+						break ;
+					}
+               //Plnenie vektoru:
+					fileContent.push_back(c);
+				}
+			} else {
+            // Nepodarilo sa mi otvorit file
+				return 1;
+			}
+			fclose(fp);
+		}
+	} else {
+      // Subor neexistuje
+		return 2;
+	}
+   // Making string containing the content of file to be copied
+	std::string fileContentStr(fileContent.begin(), fileContent.end());
+
+   // Making new file and putting in the content of the old one
+	std::string pathToNewFile("");
+	pathToNewFile.append(dest).append("/").append(fileName);
+
+	if (!fileExists(pathToNewFile)) {
+		FILE* fileHandle;
+		fileHandle = fopen(pathToNewFile.c_str(),"wb");
+		if (fileHandle != NULL) {
+			fwrite(fileContentStr.c_str(), sizeof(char), fileContentStr.size(), fileHandle);
+		} else {
+         // Nepodarilo sa mi otvorit subor
+			return 3;
+		}
+		fclose(fileHandle);
+	} else {
+      // Nevytvoril som, lebo uz existuje
+		return 4;
+	}
+
+	if (remove(file.c_str()) != 0) {
+      // vznikol error pri mazani
+		return 5;
+	}
+	return 0;
+}
+
+/**
+ * @brief      TODO
+ */
+void userAuthenticated() {
+	std::vector<EmailsStruct> emails;
+	std::vector<std::string> fileNames;
+	int mvRet;
+
+	readDirectory("Maildir/new", fileNames);				// reading new emails
+
+	for (int i = 0; i < fileNames.size(); ++i) {
+		// filling the structure containing the emails
+		std::cout << fileNames.at(i) << std::endl;
+		if ((mvRet = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/")) != 0) {
+			std::cout << "Some problem with deleting file " << fileNames.at(i) << " errcode(" << mvRet << ")";
+		}
+		EmailsStruct tmp;
+		tmp.fileName = fileNames.at(i);
+		std::string fileNameWithPath("Maildir/cur/");
+		fileNameWithPath.append(fileNames.at(i));
+		tmp.size = filesize(fileNameWithPath.c_str());
+		emails.push_back(tmp);
+		std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
+		emails.at(i);
+	}
+
+	std::cout << "-----------------" << std::endl;
+	for (int i = 0; i < emails.size(); ++i) {
+		std::cout << emails.at(i).fileName << std::endl;
+	}
+	std::cout << "-----------------" << std::endl;
+
+}
 
 bool checkForSpaceAfterCommand(std::string message) {
 	return (message.substr(4,1) == " ") ? true : false;
@@ -285,79 +437,83 @@ Command getCommand(std::string message) {
 	std::string usersCommand = uppercase(message.substr(0,4)); // TODO - osetri, ak pride prikaz s dlzkou menej ako 4
 	                                                           // TODO - moze byt aj prikaz TOP, ten ma len 3 znaky	
 	Command toBeReturned;
+	toBeReturned.name = cmd_unknown;
+	toBeReturned.firstArg.clear();
+	toBeReturned.secondArg.clear();
+
 	if (usersCommand == "USER" && checkForSpaceAfterCommand(message)) {
-		toBeReturned.name = cmd_user;
-		toBeReturned.firstArg = message.substr(5, message.length()-7);
-		toBeReturned.secondArg.clear();
-		return toBeReturned;
+		toBeReturned.name 		= cmd_user;
+		toBeReturned.firstArg 	= message.substr(5, message.length()-7);
 	} else if (usersCommand == "PASS" && checkForSpaceAfterCommand(message)) {
-		toBeReturned.name = cmd_pass;
-		toBeReturned.firstArg = message.substr(5, message.length()-7);
-		toBeReturned.secondArg.clear();
-		return toBeReturned;
+		toBeReturned.name 		= cmd_pass;
+		toBeReturned.firstArg 	= message.substr(5, message.length()-7);
 	} else if (usersCommand == "APOP" && checkForSpaceAfterCommand(message)) {
 		std::string arguments 	= message.substr(5, message.length()-7);
 		toBeReturned.name 		= cmd_apop;
 		toBeReturned.firstArg 	= arguments.substr(0, arguments.find(" "));
 		toBeReturned.secondArg 	= arguments.substr(arguments.find(" ")+1, arguments.length()-arguments.find(" "));
-		return toBeReturned;
+	} else if (usersCommand == "QUIT") {
+		toBeReturned.name 		= cmd_quit;
 	}
-	//In case it is unknown command
-	toBeReturned.name = cmd_unknown;
-	toBeReturned.firstArg.clear();
-	toBeReturned.secondArg.clear();
+	
 	return toBeReturned;
-
 }
 
 std::string process_message(std::string message, ssize_t n, argumentsForThreadStructure* threadArgs) {
-	std::cout << "I have read " << n << "B: --->" << message << "<---" << std::endl;
 	std::cout << getCommand(message).name << std::endl;
 	std::string toBeReturned("");
 	Command actualCommand = getCommand(message);
-	
+
 	switch(threadArgs->sessionState) {
 		case state_USER_REQUIRED:
 			if (getCommand(message).name == cmd_user) {
-				if (getUsername(getFileContent(threadArgs->params->authFile)) == actualCommand.firstArg) {	// TODO - citanie suborov je mozne len raz
+				if (threadArgs->params->username == actualCommand.firstArg) {
 					toBeReturned = "+OK\r\n";
 					threadArgs->sessionState = state_PASSWORD_REQUIRED;
 				} else {
-					// Autentizacia zlyhala, vraciam error
+						// Autentizacia zlyhala, vraciam error
 					toBeReturned = "-ERR\r\n";
-					//TODO	co teraz? Mam daneho usera odpojit? Alebo len ostat v stave, ktory vyzaduje meno?
-					//		momentalne ostavam v stave vyzadujucom meno
+						//TODO	co teraz? Mam daneho usera odpojit? Alebo len ostat v stave, ktory vyzaduje meno?
+						//		momentalne ostavam v stave vyzadujucom meno
 				}
 			} else if (getCommand(message).name == cmd_apop) {
-				if (getUsername(getFileContent(threadArgs->params->authFile)) == actualCommand.firstArg) {
-					// if (threadArgs->timestamp + getPassword(getFileContent(threadArgs->params->authFile)) == actualCommand.secondArg) {
+				if (threadArgs->params->username == actualCommand.firstArg) {
+						// Now user is ok, let's test hash equality
+					std::string myHash = md5(threadArgs->timestamp + threadArgs->params->password);
+					if (myHash == actualCommand.secondArg) {
 						toBeReturned = "+OK\r\n";
 						threadArgs->sessionState = state_TRANSACTION;
-					// }
+					} else {
+						toBeReturned = "-ERR\r\n";
+					}
 				} else {
 					toBeReturned = "-ERR\r\n";
 				}
 			} else {
-				// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user ani apop
+					// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user ani apop
 				toBeReturned = "-ERR\r\n";
 			}
 			break;
 		case state_PASSWORD_REQUIRED:
 			if (getCommand(message).name == state_PASSWORD_REQUIRED) {
-				if (getPassword(getFileContent(threadArgs->params->authFile)) == actualCommand.firstArg) {	// TODO - citanie suborov je mozne len raz
+				if (threadArgs->params->password == actualCommand.firstArg) {
 					toBeReturned = "+OK\r\n";
 					threadArgs->sessionState = state_TRANSACTION;
+					userAuthenticated();
 				} else {
 					threadArgs->sessionState = state_USER_REQUIRED;
 					toBeReturned = "-ERR\r\n";
 				}
 			} else {
-				// som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
+					// som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
 				threadArgs->sessionState = state_USER_REQUIRED;
 				toBeReturned = "-ERR\r\n";
 			}
 			break;
-
+		case state_TRANSACTION:
+		// Na zaciatku transaction state by som mal presunut vsetky spravy z new do cur a zaviest ich do struktury
+		// obsahujucej informacie o vsetkych suboroch
+		
 		default:
 			break;
 	}
@@ -365,30 +521,22 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 }
 
 void *service(void *threadid) {
+	
 	int n, r, connectfd;
 	char buf[MAX_BUFFER_SIZE];
 	std::string recievedMessage("");
+	
 	struct argumentsForThreadStructure *my_data = (struct argumentsForThreadStructure *) threadid;
 
 	std::cout << "New thread" << std::endl;
-	std::cout << "authorisation file is --->" << my_data->params->authFile << "<---" << std::endl;
-	std::cout << "Toto idem porovnavat: --->" << my_data->timestamp << "<--- (.size() is )" << my_data->timestamp.size() << std::endl;
-
-	std::cout << "==========================" << std::endl;
-	for(std::string::size_type i = 0; i < my_data->timestamp.size(); ++i) {
-	    std::cout << (int) my_data->timestamp[i] << "..." << my_data->timestamp[i] << std::endl;
-	}
-	std::cout << "==========================" << std::endl;
-
 
 	while ((n = read(my_data->acceptedSockDes, buf, MAX_BUFFER_SIZE)) > 0) {
 		for (int i = 0; i < n; ++i) {
 			recievedMessage += buf[i];
 		}
 		std::string response = process_message(recievedMessage, n, my_data);
-		
 		std::cout << "My actual state is " << my_data->sessionState << std::endl;
-
+		
 		r = write(my_data->acceptedSockDes, response.c_str(), response.length());
 		recievedMessage.clear();
 		if (r == -1)
@@ -418,6 +566,8 @@ int main(int argc, char *argv[])
 
 	if (params.authFile != "") {
 		std::string authFileContent = getFileContent(params.authFile);
+		params.username 			= getUsername(authFileContent);
+		params.password				= getPassword(authFileContent);
 	}
 
 	/*=============================================================*/
@@ -471,6 +621,7 @@ int main(int argc, char *argv[])
 	char buffer[MAX_BUFFER_SIZE+1];
 	sockaddr_in addr;
 	std::string lastTimestamp;
+	std::vector<ArgsToThread> v;
 
 	/* Here should go the code to create the server socket bind it to a port and call listen
 	    listenfd = socket(...);
@@ -521,23 +672,22 @@ int main(int argc, char *argv[])
 				if (FD_ISSET(j, &tempset)) {
 
 					//Filling structure that I am going to send to thread
-					argsToThread threadArgs;
+					ArgsToThread threadArgs;
 					threadArgs.acceptedSockDes = peersock;
 					threadArgs.params = &params;
 					threadArgs.sessionState = params.clearPass ? state_USER_REQUIRED : state_APOP_REQUIRED;
 					threadArgs.timestamp = lastTimestamp;
-					std::cout << "-*->" << threadArgs.timestamp << "<-*-" << std::endl;
+					v.push_back(threadArgs);
 
 					pthread_t recievingThread;
 					int thread_ret_code;
-					if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)&threadArgs)) != 0) {
+					if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)&v.at(v.size()-1))) != 0) {
 						// TODO - co robit v takomto pripade?
 						// Mozno poslat pripojenemu uzivatelovi, nech sa pripoji znova a odpojit ho?
 						// Zatial vypisujem hlasku a koncim cely server
 						fprintf(stderr,"ERROR: Couldn't create new thread for new connection\n");
 						exit(EXIT_FAILURE);
 					}
-					std::cout << "-***->" << threadArgs.timestamp << "<-***-" << std::endl;
 					FD_CLR(j, &readset);
 
 	         }      // end if (FD_ISSET(j, &tempset))
