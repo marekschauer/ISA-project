@@ -31,13 +31,17 @@ typedef enum {
 	cmd_user,
 	cmd_pass,
 	cmd_apop,
-	cmd_list,
 	cmd_stat,
+	cmd_list,
 	cmd_retr,
+	cmd_dele,
+	cmd_noop,
+	cmd_rset,
+	// cmd_top,	
+	cmd_uidl,	
 	cmd_quit,
 	cmd_unknown
 } CommandName;
-
 
 typedef enum {
 	state_USER_REQUIRED,
@@ -47,6 +51,11 @@ typedef enum {
 	state_UPDATE
 } SessionState;
 
+typedef struct emails {
+	std::string fileName;
+	uint size;
+
+} EmailsStruct;
 
 typedef struct programParameters {
 	std::string authFile;
@@ -63,6 +72,7 @@ typedef struct argumentsForThreadStructure {
 	SessionState sessionState;
 	std::string timestamp;
 	Parameters* params;
+	std::vector<EmailsStruct> emails;
 } ArgsToThread;
 
 typedef struct cmd {
@@ -71,11 +81,6 @@ typedef struct cmd {
 	std::string secondArg;
 } Command;
 
-typedef struct emails {
-	std::string fileName;
-	uint size;
-
-} EmailsStruct;
 
 
 /**
@@ -116,6 +121,22 @@ int directoryExists(std::string strFolderName) {
 		return 1;
 	}
 	return 0;
+}
+
+/**
+ * @brief      Determines if given string is numeric.
+ *
+ * @param[in]  pszInput     The string to be checked, wheter it contains only digits
+ * @param[in]  nNumberBase  The number base
+ *
+ * @return     True if numeric, False otherwise.
+ */
+bool isNumeric( const char* pszInput, int nNumberBase )
+{
+   std::string base = "0123456789ABCDEF";
+   std::string input = pszInput;
+ 
+   return (input.find_first_not_of(base.substr(0, nNumberBase)) == std::string::npos);
 }
 
 
@@ -398,19 +419,24 @@ int moveFile(std::string file, std::string dest) {
 /**
  * @brief      TODO
  */
-void userAuthenticated() {
-	std::vector<EmailsStruct> emails;
+void userAuthenticated(std::vector<EmailsStruct>& emails) {
+	// std::vector<EmailsStruct> emails;
 	std::vector<std::string> fileNames;
 	int mvRet;
 
 	readDirectory("Maildir/new", fileNames);				// reading new emails
 
 	for (int i = 0; i < fileNames.size(); ++i) {
-		// filling the structure containing the emails
-		std::cout << fileNames.at(i) << std::endl;
+		// moving the files from new to cur
 		if ((mvRet = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/")) != 0) {
+			// TODO - co teraz?
 			std::cout << "Some problem with deleting file " << fileNames.at(i) << " errcode(" << mvRet << ")";
 		}
+	}
+
+	fileNames.clear();
+	readDirectory("Maildir/cur", fileNames);
+	for (int i = 0; i < fileNames.size(); ++i) {
 		EmailsStruct tmp;
 		tmp.fileName = fileNames.at(i);
 		std::string fileNameWithPath("Maildir/cur/");
@@ -420,13 +446,6 @@ void userAuthenticated() {
 		std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
 		emails.at(i);
 	}
-
-	std::cout << "-----------------" << std::endl;
-	for (int i = 0; i < emails.size(); ++i) {
-		std::cout << emails.at(i).fileName << std::endl;
-	}
-	std::cout << "-----------------" << std::endl;
-
 }
 
 bool checkForSpaceAfterCommand(std::string message) {
@@ -452,6 +471,19 @@ Command getCommand(std::string message) {
 		toBeReturned.name 		= cmd_apop;
 		toBeReturned.firstArg 	= arguments.substr(0, arguments.find(" "));
 		toBeReturned.secondArg 	= arguments.substr(arguments.find(" ")+1, arguments.length()-arguments.find(" "));
+	} else if (usersCommand == "STAT") {
+		toBeReturned.name		= cmd_stat;
+	} else if (usersCommand == "LIST") {
+		toBeReturned.name 		= cmd_list;
+		if (checkForSpaceAfterCommand(message)) {
+			toBeReturned.firstArg = message.substr(5, message.length()-7);
+			if (!isNumeric(toBeReturned.firstArg.c_str(), 10)) {
+				toBeReturned.firstArg.clear();
+				toBeReturned.name = cmd_unknown;
+			}
+		}
+	} else if (usersCommand == "NOOP") {
+		toBeReturned.name = cmd_noop;
 	} else if (usersCommand == "QUIT") {
 		toBeReturned.name 		= cmd_quit;
 	}
@@ -460,8 +492,11 @@ Command getCommand(std::string message) {
 }
 
 std::string process_message(std::string message, ssize_t n, argumentsForThreadStructure* threadArgs) {
-	std::cout << getCommand(message).name << std::endl;
+	
+	std::cout << "----------------------------------------------" << std::endl;
+	std::cout << "Prisiel mi command no. " << getCommand(message).name << std::endl;
 	std::string toBeReturned("");
+	toBeReturned.clear();
 	Command actualCommand = getCommand(message);
 
 	switch(threadArgs->sessionState) {
@@ -483,6 +518,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 					if (myHash == actualCommand.secondArg) {
 						toBeReturned = "+OK\r\n";
 						threadArgs->sessionState = state_TRANSACTION;
+						userAuthenticated(threadArgs->emails);
 					} else {
 						toBeReturned = "-ERR\r\n";
 					}
@@ -490,27 +526,76 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 					toBeReturned = "-ERR\r\n";
 				}
 			} else {
-					// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user ani apop
+				// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user ani apop
 				toBeReturned = "-ERR\r\n";
 			}
 			break;
 		case state_PASSWORD_REQUIRED:
-			if (getCommand(message).name == state_PASSWORD_REQUIRED) {
+			if (getCommand(message).name == cmd_pass) {
 				if (threadArgs->params->password == actualCommand.firstArg) {
 					toBeReturned = "+OK\r\n";
 					threadArgs->sessionState = state_TRANSACTION;
-					userAuthenticated();
+					userAuthenticated(threadArgs->emails);
 				} else {
 					threadArgs->sessionState = state_USER_REQUIRED;
 					toBeReturned = "-ERR\r\n";
 				}
 			} else {
-					// som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
+				// som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
 				threadArgs->sessionState = state_USER_REQUIRED;
 				toBeReturned = "-ERR\r\n";
 			}
 			break;
 		case state_TRANSACTION:
+			if (getCommand(message).name == cmd_stat) {
+				int numberOfEmails 	= threadArgs->emails.size();
+				int sizeOfEmails	= 0;
+				for (int i = 0; i < threadArgs->emails.size(); ++i) {
+					sizeOfEmails += threadArgs->emails.at(i).size;
+				}
+				toBeReturned.append("+OK ")
+							.append(to_string(numberOfEmails))
+							.append(" ")
+							.append(to_string(sizeOfEmails))
+							.append("\r\n");
+			} else if (getCommand(message).name == cmd_list) {
+				// TODO - vyradit z vypisu tie emaily, ktore su oznacene na vymazanie
+				
+				if (actualCommand.firstArg == "") {
+					// +OK 2 messages (320 octets)	
+					int numberOfEmails 	= threadArgs->emails.size();
+					int sizeOfEmails	= 0;
+					for (int i = 0; i < threadArgs->emails.size(); ++i) {
+						sizeOfEmails += threadArgs->emails.at(i).size;
+					}
+					toBeReturned.append("+OK ")
+								.append(to_string(numberOfEmails))
+								.append(" messages (")
+								.append(to_string(sizeOfEmails))
+								.append(" octets)")
+								.append("\r\n");
+					for (int i = 0; i < threadArgs->emails.size(); ++i) {
+						toBeReturned.append(to_string(i+1))
+									.append(" ")
+									.append(std::to_string(threadArgs->emails.at(i).size))
+									.append("\r\n");
+					}
+					toBeReturned.append(".\r\n");
+				} else {
+					
+  					int i_dec = std::stoi (actualCommand.firstArg, NULL);
+
+					toBeReturned.append("OK+ ")
+								.append(actualCommand.secondArg)
+								.append(std::to_string(threadArgs->emails.at(i_dec-1).size))
+								.append("\r\n");
+				}
+			} else if (getCommand(message).name == cmd_noop) {
+				
+				toBeReturned.append("+OK\r\n");
+				
+			}
+			break;
 		// Na zaciatku transaction state by som mal presunut vsetky spravy z new do cur a zaviest ich do struktury
 		// obsahujucej informacie o vsetkych suboroch
 		
@@ -521,7 +606,6 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 }
 
 void *service(void *threadid) {
-	
 	int n, r, connectfd;
 	char buf[MAX_BUFFER_SIZE];
 	std::string recievedMessage("");
