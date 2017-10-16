@@ -14,6 +14,9 @@
 #include <arpa/inet.h>
 #include <ctime>
 #include <fcntl.h>
+#include <cstring>
+
+#include "md5.h"
 
 using namespace std;
 
@@ -30,6 +33,7 @@ typedef enum {
 	cmd_list,
 	cmd_stat,
 	cmd_retr,
+	cmd_quit,
 	cmd_unknown
 } CommandName;
 
@@ -37,6 +41,7 @@ typedef enum {
 typedef enum {
 	state_USER_REQUIRED,
 	state_PASSWORD_REQUIRED,
+	state_APOP_REQUIRED,
 	state_TRANSACTION,
 	state_UPDATE
 } SessionState;
@@ -53,6 +58,7 @@ typedef struct programParameters {
 typedef struct argumentsForThreadStructure {
 	int acceptedSockDes;
 	SessionState sessionState;
+	std::string timestamp;
 	Parameters* params;
 
 } argsToThread;
@@ -289,8 +295,13 @@ Command getCommand(std::string message) {
 		toBeReturned.firstArg = message.substr(5, message.length()-7);
 		toBeReturned.secondArg.clear();
 		return toBeReturned;
+	} else if (usersCommand == "APOP" && checkForSpaceAfterCommand(message)) {
+		std::string arguments 	= message.substr(5, message.length()-7);
+		toBeReturned.name 		= cmd_apop;
+		toBeReturned.firstArg 	= arguments.substr(0, arguments.find(" "));
+		toBeReturned.secondArg 	= arguments.substr(arguments.find(" ")+1, arguments.length()-arguments.find(" "));
+		return toBeReturned;
 	}
-
 	//In case it is unknown command
 	toBeReturned.name = cmd_unknown;
 	toBeReturned.firstArg.clear();
@@ -317,8 +328,17 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 					//TODO	co teraz? Mam daneho usera odpojit? Alebo len ostat v stave, ktory vyzaduje meno?
 					//		momentalne ostavam v stave vyzadujucom meno
 				}
+			} else if (getCommand(message).name == cmd_apop) {
+				if (getUsername(getFileContent(threadArgs->params->authFile)) == actualCommand.firstArg) {
+					// if (threadArgs->timestamp + getPassword(getFileContent(threadArgs->params->authFile)) == actualCommand.secondArg) {
+						toBeReturned = "+OK\r\n";
+						threadArgs->sessionState = state_TRANSACTION;
+					// }
+				} else {
+					toBeReturned = "-ERR\r\n";
+				}
 			} else {
-				// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user
+				// pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user ani apop
 				toBeReturned = "-ERR\r\n";
 			}
 			break;
@@ -352,6 +372,14 @@ void *service(void *threadid) {
 
 	std::cout << "New thread" << std::endl;
 	std::cout << "authorisation file is --->" << my_data->params->authFile << "<---" << std::endl;
+	std::cout << "Toto idem porovnavat: --->" << my_data->timestamp << "<--- (.size() is )" << my_data->timestamp.size() << std::endl;
+
+	std::cout << "==========================" << std::endl;
+	for(std::string::size_type i = 0; i < my_data->timestamp.size(); ++i) {
+	    std::cout << (int) my_data->timestamp[i] << "..." << my_data->timestamp[i] << std::endl;
+	}
+	std::cout << "==========================" << std::endl;
+
 
 	while ((n = read(my_data->acceptedSockDes, buf, MAX_BUFFER_SIZE)) > 0) {
 		for (int i = 0; i < n; ++i) {
@@ -388,13 +416,9 @@ int main(int argc, char *argv[])
 
 	handleArguments(argc, argv, params.authFile, params.clearPass, params.port, params.maildirPath, params.reset);
 
-
-
-
 	if (params.authFile != "") {
 		std::string authFileContent = getFileContent(params.authFile);
 	}
-
 
 	/*=============================================================*/
 	int listenfd;
@@ -446,6 +470,7 @@ int main(int argc, char *argv[])
 	timeval tv;
 	char buffer[MAX_BUFFER_SIZE+1];
 	sockaddr_in addr;
+	std::string lastTimestamp;
 
 	/* Here should go the code to create the server socket bind it to a port and call listen
 	    listenfd = socket(...);
@@ -482,7 +507,8 @@ int main(int argc, char *argv[])
 					maxfd = (maxfd < peersock)?peersock:maxfd;
 				}
 
-				std::string welcomeMsg = "+OK POP3 server ready " + getTimestamp() + "\r\n";
+				lastTimestamp = getTimestamp();
+				std::string welcomeMsg = "+OK POP3 server ready " + lastTimestamp + "\r\n";
 				write(peersock, welcomeMsg.c_str(), welcomeMsg.length());
 				
 				FD_CLR(listenfd, &tempset);
@@ -494,11 +520,13 @@ int main(int argc, char *argv[])
 
 				if (FD_ISSET(j, &tempset)) {
 
-					//Going to fill structure that I am going to send to thread
+					//Filling structure that I am going to send to thread
 					argsToThread threadArgs;
 					threadArgs.acceptedSockDes = peersock;
 					threadArgs.params = &params;
-					threadArgs.sessionState = state_USER_REQUIRED;
+					threadArgs.sessionState = params.clearPass ? state_USER_REQUIRED : state_APOP_REQUIRED;
+					threadArgs.timestamp = lastTimestamp;
+					std::cout << "-*->" << threadArgs.timestamp << "<-*-" << std::endl;
 
 					pthread_t recievingThread;
 					int thread_ret_code;
@@ -509,7 +537,7 @@ int main(int argc, char *argv[])
 						fprintf(stderr,"ERROR: Couldn't create new thread for new connection\n");
 						exit(EXIT_FAILURE);
 					}
-					
+					std::cout << "-***->" << threadArgs.timestamp << "<-***-" << std::endl;
 					FD_CLR(j, &readset);
 
 	         }      // end if (FD_ISSET(j, &tempset))
