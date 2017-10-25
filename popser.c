@@ -54,7 +54,7 @@ typedef enum {
 typedef struct emails {
 	std::string fileName;
 	uint size;
-
+	bool toBeDeleted;
 } EmailsStruct;
 
 typedef struct programParameters {
@@ -479,8 +479,13 @@ Command getCommand(std::string message) {
 			toBeReturned.firstArg = message.substr(5, message.length()-7);
 			if (!isNumeric(toBeReturned.firstArg.c_str(), 10)) {
 				toBeReturned.firstArg.clear();
-				toBeReturned.name = cmd_unknown;
+				std::string arguments = message.substr(5, message.length()-7); // TODO - why is this line here?
 			}
+		}
+	} else if (usersCommand == "DELE") {
+		if (checkForSpaceAfterCommand(message) && isNumeric(message.substr(5, message.length()-7).c_str(), 10)) {
+			toBeReturned.name 	= cmd_dele;
+			toBeReturned.firstArg = message.substr(5, message.length()-7);
 		}
 	} else if (usersCommand == "NOOP") {
 		toBeReturned.name = cmd_noop;
@@ -495,6 +500,8 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 	
 	std::cout << "----------------------------------------------" << std::endl;
 	std::cout << "Prisiel mi command no. " << getCommand(message).name << std::endl;
+	std::cout << "Prvy argument: ------->" << getCommand(message).firstArg << std::endl;
+	std::cout << "Druhy argument: ------>" << getCommand(message).secondArg << std::endl;
 	std::string toBeReturned("");
 	toBeReturned.clear();
 	Command actualCommand = getCommand(message);
@@ -548,6 +555,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 			break;
 		case state_TRANSACTION:
 			if (getCommand(message).name == cmd_stat) {
+				// TODO - nezapocitavaj maily oznacene na vymazanie
 				int numberOfEmails 	= threadArgs->emails.size();
 				int sizeOfEmails	= 0;
 				for (int i = 0; i < threadArgs->emails.size(); ++i) {
@@ -560,13 +568,17 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 							.append("\r\n");
 			} else if (getCommand(message).name == cmd_list) {
 				// TODO - vyradit z vypisu tie emaily, ktore su oznacene na vymazanie
-				
+				// 		- asi spravene, over este
+				// TODO - osetrovat pristupy do vektora, aby som nedaval index mimo hranice
 				if (actualCommand.firstArg == "") {
-					// +OK 2 messages (320 octets)	
 					int numberOfEmails 	= threadArgs->emails.size();
 					int sizeOfEmails	= 0;
 					for (int i = 0; i < threadArgs->emails.size(); ++i) {
-						sizeOfEmails += threadArgs->emails.at(i).size;
+						// loop for counting of size
+						if (!threadArgs->emails.at(i).toBeDeleted) {
+							// only if the email is not marked as deleted
+							sizeOfEmails += threadArgs->emails.at(i).size;
+						}
 					}
 					toBeReturned.append("+OK ")
 								.append(to_string(numberOfEmails))
@@ -574,22 +586,46 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
 								.append(to_string(sizeOfEmails))
 								.append(" octets)")
 								.append("\r\n");
+
+					// Vypis jednotlivych emailov pod seba
 					for (int i = 0; i < threadArgs->emails.size(); ++i) {
-						toBeReturned.append(to_string(i+1))
-									.append(" ")
-									.append(std::to_string(threadArgs->emails.at(i).size))
-									.append("\r\n");
+						if (!threadArgs->emails.at(i).toBeDeleted) {
+							toBeReturned.append(to_string(i+1))
+										.append(" ")
+										.append(std::to_string(threadArgs->emails.at(i).size))
+										.append("\r\n");
+						}
 					}
 					toBeReturned.append(".\r\n");
 				} else {
-					
   					int i_dec = std::stoi (actualCommand.firstArg, NULL);
-
-					toBeReturned.append("OK+ ")
-								.append(actualCommand.secondArg)
-								.append(std::to_string(threadArgs->emails.at(i_dec-1).size))
-								.append("\r\n");
+					if (!threadArgs->emails.at(i_dec-1).toBeDeleted) {
+						toBeReturned.append("OK+ ")
+									.append(actualCommand.firstArg)
+									.append(" ")
+									.append(std::to_string(threadArgs->emails.at(i_dec-1).size))
+									.append("\r\n");
+					}
 				}
+			} else if (getCommand(message).name == cmd_dele) {
+				int mailID;
+  				mailID = std::stoi (actualCommand.firstArg, NULL);
+
+  				if (mailID < 0 || mailID > threadArgs->emails.size()) {
+  					toBeReturned.append("-ERR no such message\r\n");
+  				} else {
+  					if (!threadArgs->emails.at(mailID-1).toBeDeleted) {
+  						threadArgs->emails.at(mailID-1).toBeDeleted = true;
+  						toBeReturned.append("+OK message ")
+  									.append(actualCommand.firstArg)
+  									.append(" deleted\r\n");
+  					} else {
+  						toBeReturned.append("-ERR message ")
+  									.append(actualCommand.firstArg)
+  									.append("already deleted");
+  					}
+  				}
+
 			} else if (getCommand(message).name == cmd_noop) {
 				
 				toBeReturned.append("+OK\r\n");
