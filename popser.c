@@ -665,10 +665,6 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
    return toBeReturned;
 }
 
-// void disconnectClient(int connectFD) {
-
-// }
-
 void *service(void *threadid) {
    int n, r, result, connectfd;
    char buf[MAX_BUFFER_SIZE];
@@ -682,60 +678,37 @@ void *service(void *threadid) {
    timeval tmvl;
    int selectResult;
 
-
    std::cout << "New thread" << std::endl;
 
-   /**
-    * I'm going to send welcome message
-    */
+   // Sending welcome message
    std::string welcomeMsg = "+OK POP3 server ready "; 
    welcomeMsg.append(my_data->timestamp);
    welcomeMsg.append("\r\n");
-   welcomeMsg.append("<---");
    write(socDescriptor, welcomeMsg.c_str(), welcomeMsg.length());
-   /**
-    * Welcome message hopefully sent
-    * TODO - osetrovacky, ci sa write podaril?
-    */
-
-   
+      
    FD_ZERO(&descriptorSet);
    FD_SET(socDescriptor, &descriptorSet);
 
    while(1) {
-      std::cout << "Som na zaciatku while ============================" << std::endl;
-
       memcpy(&threadTempset, &descriptorSet, sizeof(threadTempset));
-      tmvl.tv_sec = 10;
+      tmvl.tv_sec = 30;
       tmvl.tv_usec = 0;
       selectResult = select(socDescriptor+1, &threadTempset, NULL, NULL, &tmvl);
 
       if (selectResult == 0) {
          FD_CLR(socDescriptor, &readset);
          close(socDescriptor);
-         std::cout << "Timeout in thread is gone! I think I already closed this thread" << std::endl;
-         
-         std::cout << "I am going to cancel thread..." << std::endl;
-         
          pthread_exit(NULL);
-         
-         std::cout << "Now this thread should be canceled" << std::endl;
       } else if (selectResult < 0) {
          std::cout << "Some problem with select() (" << strerror(errno) << ")" << std::endl;
       }
 
-      std::cout << "(" << pthread_self() << ")" << "What's selectResult ? " << selectResult << std::endl;
-
-      std::cout << "Kde mi to pada? ... >" << socDescriptor << "< ..." << std::endl;
-      
-      
       if (FD_ISSET(socDescriptor,&threadTempset)) {
          do {
             result = recv(socDescriptor, buf, MAX_BUFFER_SIZE, 0);
             for (int i = 0; i < result; ++i) {
                recievedMessage += buf[i];
             }
-            std::cout << "MEHEHE " << result << std::endl;
             memset(buf, 0, MAX_BUFFER_SIZE);
             // TODO - asi by sa zisli nejake osetrovacky, ked
             // recv vrati nieco mensie nez 0 a podobne
@@ -744,19 +717,13 @@ void *service(void *threadid) {
             // Client is disconnected
             FD_CLR(socDescriptor, &readset);
             close(socDescriptor);
-
-            std::cout << pthread_self() << "now I am leaving this thread..." << std::endl;
-            
             pthread_exit(NULL);
-            
-            std::cout << pthread_self() << "I left this thread" << std::endl;
          }
       }
 
-      std::cout << "recievedMessage = --->" << recievedMessage << "<---" << std::endl;
+      std::string response = process_message(recievedMessage, recievedMessage.length(), my_data);
+      write(socDescriptor, response.c_str(), response.length());
       recievedMessage.clear();
-
-      std::cout << "I'm still in thread " << pthread_self() << std::endl;
    }
 
 
@@ -782,7 +749,6 @@ void *service(void *threadid) {
 
    printf("clxxose(connectfd)\n");
    close(my_data->acceptedSockDes);
-   sleep(10);
 }
 
 int main(int argc, char *argv[])
