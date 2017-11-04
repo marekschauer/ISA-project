@@ -17,6 +17,7 @@
 #include <cstring>
 #include <vector>
 #include <dirent.h>
+#include <mutex>          // std::mutex
 #include "md5.h"
 
 using namespace std;
@@ -27,7 +28,6 @@ using namespace std;
 #endif
 #define QUEUE  (2)
 
-fd_set readset, tempset;
 
 typedef enum {
    cmd_user,
@@ -47,6 +47,7 @@ typedef enum {
 
 typedef enum {
    state_USER_REQUIRED,
+   state_WRONG_USERNAME,
    state_PASSWORD_REQUIRED,
    state_APOP_REQUIRED,
    state_TRANSACTION,
@@ -75,6 +76,7 @@ typedef struct argumentsForThreadStructure {
    std::string timestamp;
    Parameters* params;
    std::vector<EmailsStruct> emails;
+   pthread_t threadID;
 } ArgsToThread;
 
 typedef struct cmd {
@@ -83,7 +85,9 @@ typedef struct cmd {
    std::string secondArg;
 } Command;
 
-
+std::vector<ArgsToThread*> threadArgsVec;
+fd_set readset, tempset;
+std::mutex mtx;           // mutex for critical section
 
 /**
  * @brief      Function for printing help and exiting whole program
@@ -98,7 +102,7 @@ void printHelp() {      //TODO
  *
  * @param[in]  strFileName  The string file name
  *
- * @return     1 when file eists, 0 otherwise
+ * @return     1 when file exists, 0 otherwise
  */
 int fileExists(std::string strFileName) {
    if( access( strFileName.c_str(), F_OK ) != -1 ) {
@@ -421,33 +425,41 @@ int moveFile(std::string file, std::string dest) {
 /**
  * @brief      TODO
  */
-void userAuthenticated(std::vector<EmailsStruct>& emails) {
+bool userAuthenticated(std::vector<EmailsStruct>& emails) {
    // std::vector<EmailsStruct> emails;
    std::vector<std::string> fileNames;
    int mvRet;
+   if (mtx.try_lock()) {
+      // mutex is free, so I locked it and let's do some stuff
+      readDirectory("Maildir/new", fileNames);           // reading new emails
 
-   readDirectory("Maildir/new", fileNames);           // reading new emails
-
-   for (int i = 0; i < fileNames.size(); ++i) {
-      // moving the files from new to cur
-      if ((mvRet = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/")) != 0) {
-         // TODO - co teraz?
-         std::cout << "Some problem with deleting file " << fileNames.at(i) << " errcode(" << mvRet << ")" << std::endl;
+      for (int i = 0; i < fileNames.size(); ++i) {
+         // moving the files from new to cur
+         if ((mvRet = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/")) != 0) {
+            // TODO - co teraz?
+            std::cout << "Some problem with deleting file " << fileNames.at(i) << " errcode(" << mvRet << ")" << std::endl;
+         }
       }
-   }
 
-   fileNames.clear();
-   readDirectory("Maildir/cur", fileNames);
-   for (int i = 0; i < fileNames.size(); ++i) {
-      EmailsStruct tmp;
-      tmp.fileName = fileNames.at(i);
-      std::string fileNameWithPath("Maildir/cur/");
-      fileNameWithPath.append(fileNames.at(i));
-      tmp.size = filesize(fileNameWithPath.c_str());
-      emails.push_back(tmp);
-      std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
-      emails.at(i);
+      fileNames.clear();
+      readDirectory("Maildir/cur", fileNames);
+      for (int i = 0; i < fileNames.size(); ++i) {
+         EmailsStruct tmp;
+         tmp.fileName = fileNames.at(i);
+         std::string fileNameWithPath("Maildir/cur/");
+         fileNameWithPath.append(fileNames.at(i));
+         tmp.size = filesize(fileNameWithPath.c_str());
+         tmp.toBeDeleted = false;
+         emails.push_back(tmp);
+         std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
+         emails.at(i);
+      }   
+      return true;
+   } else {
+      // mutex is locked
+      return false;
    }
+   
 }
 
 bool checkForSpaceAfterCommand(std::string message) {
@@ -455,12 +467,17 @@ bool checkForSpaceAfterCommand(std::string message) {
 }
 
 Command getCommand(std::string message) {
-   std::string usersCommand = uppercase(message.substr(0,4)); // TODO - osetri, ak pride prikaz s dlzkou menej ako 4
-                                                              // TODO - moze byt aj prikaz TOP, ten ma len 3 znaky   
    Command toBeReturned;
    toBeReturned.name = cmd_unknown;
    toBeReturned.firstArg.clear();
    toBeReturned.secondArg.clear();
+
+   if (message.empty()) {
+      return toBeReturned;
+   }
+
+   std::string usersCommand = uppercase(message.substr(0,4)); // TODO - osetri, ak pride prikaz s dlzkou menej ako 4
+                                                              // TODO - moze byt aj prikaz TOP, ten ma len 3 znaky   
 
    if (usersCommand == "USER" && checkForSpaceAfterCommand(message)) {
       toBeReturned.name       = cmd_user;
@@ -498,6 +515,15 @@ Command getCommand(std::string message) {
    return toBeReturned;
 }
 
+void printEmails(std::vector<EmailsStruct> emails) {
+   for (int i = 0; i < emails.size(); ++i) {
+      std::cout << "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" << std::endl;
+      std::cout << emails.at(i).fileName << std::endl;
+      std::cout << emails.at(i).size << std::endl;
+      std::cout << emails.at(i).toBeDeleted << std::endl;
+   }
+}
+
 std::string process_message(std::string message, ssize_t n, argumentsForThreadStructure* threadArgs) {
    
    std::cout << "----------------------------------------------" << std::endl;
@@ -513,49 +539,58 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
       case state_USER_REQUIRED:
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
          if (getCommand(message).name == cmd_user && threadArgs->params->clearPass) {
+            toBeReturned = "+OK\r\n";
             if (threadArgs->params->username == actualCommand.firstArg) {
-               toBeReturned = "+OK\r\n";
                threadArgs->sessionState = state_PASSWORD_REQUIRED;
             } else {
-                  // Autentizacia zlyhala, vraciam error
-               toBeReturned = "-ERR\r\n";
-                  //TODO   co teraz? Mam daneho usera odpojit? Alebo len ostat v stave, ktory vyzaduje meno?
-                  //    momentalne ostavam v stave vyzadujucom meno
+               threadArgs->sessionState = state_WRONG_USERNAME;
             }
-         } else if (getCommand(message).name == cmd_apop) {
-            if (threadArgs->params->username == actualCommand.firstArg) {
-                  // Now user is ok, let's test hash equality
-               std::string myHash = md5(threadArgs->timestamp + threadArgs->params->password);
-               if (myHash == actualCommand.secondArg) {
-                  toBeReturned = "+OK\r\n";
-                  threadArgs->sessionState = state_TRANSACTION;
-                  userAuthenticated(threadArgs->emails);
-               } else {
-                  toBeReturned = "-ERR\r\n";
-               }
-            } else {
-               toBeReturned = "-ERR\r\n";
-            }
+         } else if (actualCommand.name != cmd_quit) {
+            // Here will be QUIT handling
+         } else if (actualCommand.name != cmd_unknown) {
+            toBeReturned = "-ERR, unexpected command, expecting USER\r\n";
          } else {
-            // pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user ani apop
-            toBeReturned = "-ERR\r\n";
+               // pripad, ze som v stave USER_REQUIRED a neprisiel mi prikaz user
+            toBeReturned = "-ERR, unknown command\r\n";
+         }
+         break;
+      case state_WRONG_USERNAME:
+         // next state will be always state_USER_REQUIRED
+         threadArgs->sessionState = state_USER_REQUIRED;
+         if (actualCommand.name == cmd_pass) {
+            toBeReturned = "-ERR sorry, no mailbox for these credetials\r\n";
+         } else if (actualCommand.name != cmd_unknown) {
+            toBeReturned = "-ERR, unexpected command, expected PASS, now expecting USER\r\n";
+         } else {
+            // som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
+            toBeReturned = "-ERR, unknown command, expected PASS, now expecting USER\r\n";
          }
          break;
       case state_PASSWORD_REQUIRED:
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
          if (getCommand(message).name == cmd_pass) {
             if (threadArgs->params->password == actualCommand.firstArg) {
-               toBeReturned = "+OK\r\n";
-               threadArgs->sessionState = state_TRANSACTION;
-               userAuthenticated(threadArgs->emails);
+               if (userAuthenticated(threadArgs->emails)) {
+                  // User presiel cez mutex a vzal si ho
+                  std::cout << "User authenticated, lets go further";
+                  threadArgs->sessionState = state_TRANSACTION;
+                  toBeReturned = "+OK\r\n";
+               } else {
+                  // Mutex already taken
+                  threadArgs->sessionState = state_USER_REQUIRED;
+                  toBeReturned = "+OK, but mutex is locked\r\n";
+               }
             } else {
                threadArgs->sessionState = state_USER_REQUIRED;
-               toBeReturned = "-ERR\r\n";
+               toBeReturned = "-ERR sorry, no mailbox for these credetials\r\n";
             }
+         } else if (actualCommand.name != cmd_unknown) {
+            threadArgs->sessionState = state_USER_REQUIRED;
+            toBeReturned = "-ERR, unexpected command, expected PASS, now expecting USER\r\n";
          } else {
             // som v stave PASSWORD_REQUIRED a neprisiel mi prikaz pass
             threadArgs->sessionState = state_USER_REQUIRED;
-            toBeReturned = "-ERR\r\n";
+            toBeReturned = "-ERR, unknown command\r\n";
          }
          break;
       case state_APOP_REQUIRED:
@@ -566,6 +601,8 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                if (myHash == actualCommand.secondArg) {
                   toBeReturned = "+OK\r\n";
                   threadArgs->sessionState = state_TRANSACTION;
+                  // TODO - userAuthenticated mi vracia true/false podla toho, ci uzivatel presiel
+                  // cez mutex, dorob
                   userAuthenticated(threadArgs->emails);
                } else {
                   toBeReturned = "-ERR\r\n";
@@ -581,11 +618,15 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
       case state_TRANSACTION:
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
          if (getCommand(message).name == cmd_stat) {
-            // TODO - nezapocitavaj maily oznacene na vymazanie
-            int numberOfEmails   = threadArgs->emails.size();
-            int sizeOfEmails  = 0;
+            int numberOfEmails   = 0;
+            int sizeOfEmails     = 0;
+            printEmails(threadArgs->emails);
             for (int i = 0; i < threadArgs->emails.size(); ++i) {
-               sizeOfEmails += threadArgs->emails.at(i).size;
+               if (!threadArgs->emails.at(i).toBeDeleted) {
+                  std::cout << "SOM TU a nehanbim sa za to" << std::endl;
+                  numberOfEmails++;
+                  sizeOfEmails += threadArgs->emails.at(i).size;
+               }
             }
             toBeReturned.append("+OK ")
                      .append(to_string(numberOfEmails))
@@ -597,12 +638,13 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
             //       - asi spravene, over este
             // TODO - osetrovat pristupy do vektora, aby som nedaval index mimo hranice
             if (actualCommand.firstArg == "") {
-               int numberOfEmails   = threadArgs->emails.size();
+               int numberOfEmails   = 0;
                int sizeOfEmails  = 0;
                for (int i = 0; i < threadArgs->emails.size(); ++i) {
                   // loop for counting of size
                   if (!threadArgs->emails.at(i).toBeDeleted) {
                      // only if the email is not marked as deleted
+                     numberOfEmails++;
                      sizeOfEmails += threadArgs->emails.at(i).size;
                   }
                }
@@ -625,19 +667,29 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                toBeReturned.append(".\r\n");
             } else {
                int i_dec = std::stoi (actualCommand.firstArg, NULL);
-               if (!threadArgs->emails.at(i_dec-1).toBeDeleted) {
-                  toBeReturned.append("OK+ ")
-                           .append(actualCommand.firstArg)
-                           .append(" ")
-                           .append(std::to_string(threadArgs->emails.at(i_dec-1).size))
-                           .append("\r\n");
+               if (i_dec > static_cast<int>(threadArgs->emails.size())) {
+                  toBeReturned.append("-ERR no such message, only ")
+                              .append(std::to_string(static_cast<int>(threadArgs->emails.size())))
+                              .append(" messages in maildrop\r\n");
+               } else if (i_dec < 1) {
+                  toBeReturned.append("-ERR message ID must be greater than zero\r\n");
+               } else {
+                  if (!threadArgs->emails.at(i_dec-1).toBeDeleted) {
+                     toBeReturned.append("OK+ ")
+                                 .append(actualCommand.firstArg)
+                                 .append(" ")
+                                 .append(std::to_string(threadArgs->emails.at(i_dec-1).size))
+                                 .append("\r\n");
+                  } else {
+                     toBeReturned.append("ERR- message not found\r\n");
+                  }
                }
             }
          } else if (getCommand(message).name == cmd_dele) {
             int mailID;
             mailID = std::stoi (actualCommand.firstArg, NULL);
 
-            if (mailID < 0 || mailID > threadArgs->emails.size()) {
+            if (mailID < 1 || mailID > threadArgs->emails.size()) {  // 0 < message id <= vectorsize
                toBeReturned.append("-ERR no such message\r\n");
             } else {
                if (!threadArgs->emails.at(mailID-1).toBeDeleted) {
@@ -648,21 +700,61 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                } else {
                   toBeReturned.append("-ERR message ")
                            .append(actualCommand.firstArg)
-                           .append("already deleted");
+                           .append(" already deleted ");
                }
             }
 
+         } else if (actualCommand.name == cmd_quit) {
+            threadArgs->sessionState = state_UPDATE;
+            toBeReturned.append(process_message("", 0, threadArgs));
          } else if (getCommand(message).name == cmd_noop) {
-            
             toBeReturned.append("+OK\r\n");
-            
          }
          break;
-
+      case state_UPDATE:
+         std::cout << "Mam pristup k emailom?" << threadArgs->emails.size() << std::endl;
+         bool notRemovedFlag;
+         notRemovedFlag = false;
+         for (int i = 0; i < threadArgs->emails.size(); ++i) {
+            if (threadArgs->emails.at(i).toBeDeleted) {
+               std::string filePath = threadArgs->params->maildirPath;
+               filePath.append("/cur/").append(threadArgs->emails.at(i).fileName);
+               if (fileExists(filePath.c_str())) {
+                  if( remove(filePath.c_str()) != 0 ) {
+                     // TODO - co teraz?
+                     notRemovedFlag = true;
+                     std::cout << "Nepodarilo sa mi zmazat email " << filePath << std::endl;
+                  }
+               }
+            }
+         }
+         // TODO - teraz by sa mala vratit odpoved klientovi v zmysle ""
+         if (notRemovedFlag) {
+            toBeReturned.append("-ERR some deleted messages not removed\r\n");
+         } else {
+            toBeReturned.append("+OK\r\n");
+         }
+         mtx.unlock();
+         break;
       default:
          break;
    }
    return toBeReturned;
+}
+
+/**
+ * @brief      This function frees the memory allocated for pointer to arguments
+ *             for specific thread and than erases this pointer from threadArgs vector.
+ *
+ * @param[in]  timestamp  The timestamp sent to user to identify the thread
+ */
+void deleteFromArgsVector(std::string timestamp) {
+   for (int i = 0; i < threadArgsVec.size(); ++i) {
+      if (timestamp == threadArgsVec.at(i)->timestamp) {
+         delete threadArgsVec.at(i);
+         threadArgsVec.erase(threadArgsVec.begin()+i);
+      }
+   }
 }
 
 void *service(void *threadid) {
@@ -671,6 +763,9 @@ void *service(void *threadid) {
    std::string recievedMessage("");
 
    struct argumentsForThreadStructure *my_data = (struct argumentsForThreadStructure *) threadid;
+   std::cout << my_data->timestamp << std::endl;
+   std::cout << my_data << std::endl;
+   my_data->threadID = pthread_self();
    int socDescriptor = my_data->acceptedSockDes;
 
    // Initialisation of parameters for select function
@@ -678,7 +773,6 @@ void *service(void *threadid) {
    timeval tmvl;
    int selectResult;
 
-   std::cout << "New thread" << std::endl;
 
    // Sending welcome message
    std::string welcomeMsg = "+OK POP3 server ready "; 
@@ -696,14 +790,19 @@ void *service(void *threadid) {
       selectResult = select(socDescriptor+1, &threadTempset, NULL, NULL, &tmvl);
 
       if (selectResult == 0) {
+         // Timed out
+         deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
          close(socDescriptor);
+         mtx.unlock();
          pthread_exit(NULL);
       } else if (selectResult < 0) {
          std::cout << "Some problem with select() (" << strerror(errno) << ")" << std::endl;
       }
 
       if (FD_ISSET(socDescriptor,&threadTempset)) {
+         
+
          do {
             result = recv(socDescriptor, buf, MAX_BUFFER_SIZE, 0);
             for (int i = 0; i < result; ++i) {
@@ -713,16 +812,32 @@ void *service(void *threadid) {
             // TODO - asi by sa zisli nejake osetrovacky, ked
             // recv vrati nieco mensie nez 0 a podobne
          } while (result > 0);
+
+
+
          if (result == 0) {
             // Client is disconnected
+            // TODO - asi by som mal vsetky emaily oznacene na zmazanie odznacit
+            //          (If a session terminates for some reason other than a client-issued
+            //          QUIT command, the POP3 session does NOT enter the UPDATE state and
+            //          MUST not remove any messages from the maildrop.)
+            deleteFromArgsVector(my_data->timestamp);
             FD_CLR(socDescriptor, &readset);
             close(socDescriptor);
+            mtx.unlock();
             pthread_exit(NULL);
          }
       }
 
       std::string response = process_message(recievedMessage, recievedMessage.length(), my_data);
       write(socDescriptor, response.c_str(), response.length());
+      if (getCommand(recievedMessage).name == cmd_quit && response == "+OK\r\n") {
+         deleteFromArgsVector(my_data->timestamp);
+         FD_CLR(socDescriptor, &readset);
+         close(socDescriptor);
+         mtx.unlock();
+         pthread_exit(NULL);
+      }
       recievedMessage.clear();
    }
 
@@ -820,13 +935,6 @@ int main(int argc, char *argv[])
    char buffer[MAX_BUFFER_SIZE+1];
    sockaddr_in addr;
    std::string lastTimestamp;
-   std::vector<ArgsToThread> v;
-
-   /* Here should go the code to create the server socket bind it to a port and call listen
-       listenfd = socket(...);
-       bind(listenfd ...);
-       listen(listenfd ...);
-   */
 
    FD_ZERO(&readset);
    FD_SET(listenfd, &readset);
@@ -869,18 +977,19 @@ int main(int argc, char *argv[])
 
             /*-----------------------*/
             lastTimestamp = getTimestamp();
-            ArgsToThread threadArgs;
-            threadArgs.acceptedSockDes = peersock;
-            threadArgs.params = &params;
-            threadArgs.sessionState = params.clearPass ? state_USER_REQUIRED : state_APOP_REQUIRED;
-            threadArgs.timestamp = lastTimestamp;
-            v.push_back(threadArgs);
+            ArgsToThread* threadArgs = new ArgsToThread;
+            threadArgs->acceptedSockDes = peersock;
+            threadArgs->params = &params;
+            threadArgs->sessionState = params.clearPass ? state_USER_REQUIRED : state_APOP_REQUIRED;
+            threadArgs->timestamp = lastTimestamp;
+            threadArgsVec.push_back(threadArgs);
 
-            std::cout << "Sending this timestamp to thread " << threadArgs.timestamp << std::endl;
+            std::cout << "Sending this timestamp to thread " << threadArgs->timestamp << std::endl;
+            std::cout << "Vektor ma momentalne tolkoto prvkov:  " << threadArgsVec.size() << std::endl;
 
             pthread_t recievingThread;
             int thread_ret_code;
-            if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)&v.at(v.size()-1))) != 0) {
+            if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)threadArgsVec.at(threadArgsVec.size()-1))) != 0) {
                   // TODO - co robit v takomto pripade?
                   // Mozno poslat pripojenemu uzivatelovi, nech sa pripoji znova a odpojit ho?
                   // Zatial vypisujem hlasku a koncim cely server
@@ -889,27 +998,12 @@ int main(int argc, char *argv[])
             }
             /*-----------------------*/
          }
-
-
-         // for (j=0; j<maxfd+1; j++) {
-            
-
-         //    if (FD_ISSET(j, &tempset)) {
-
-         //       //Filling structure that I am going to send to thread
-               
-         //       FD_CLR(j, &readset);
-
-         //    }      // end if (FD_ISSET(j, &tempset))
-         // }      // end for (j=0;...)
       }      // end else if (result > 0)
    } while (1);
    /**------------------------------------------------------------**/
    /**------------------End of part inspired by-------------------**/
    /**--------http://developerweb.net/viewtopic.php?id=2933-------**/
    /**------------------------------------------------------------**/
-
-
 
    /*=============================================================*/
    return 0;
