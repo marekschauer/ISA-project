@@ -18,6 +18,7 @@
 #include <vector>
 #include <dirent.h>
 #include <mutex>          // std::mutex
+#include <map>            // std::map
 #include "md5.h"
 
 using namespace std;
@@ -58,6 +59,7 @@ typedef struct emails {
    std::string fileName;
    uint size;
    bool toBeDeleted;
+   std::string hash;
 } EmailsStruct;
 
 typedef struct programParameters {
@@ -333,13 +335,26 @@ void readDirectory(const std::string& name, std::vector<std::string>& v) {
 }
 
 /**
- * @brief      Splits a filename.
+ * @brief      Splits a filename and returns it
  *
  * @param[in]  str   The string
+ * @return     Name of the file
  */
 std::string SplitFilename (std::string str) {
    return str.substr(str.find_last_of("/\\")+1);
 }
+
+/**
+ * @brief      Splits a path and returns it
+ *
+ * @param[in]  str   The string
+ * @return     Name of the file
+ */
+std::string SplitPath (std::string str) {
+   return str.substr(0,str.find_last_of("/\\")+1);
+}
+
+
 
 /**
  * @brief      Gets the file size.
@@ -364,7 +379,7 @@ std::ifstream::pos_type filesize(const char* filename) {
  *                   4 if there is already the file with the same name on destination
  *                   5 if there is error while deleting the file to be moved
  */
-int moveFile(std::string file, std::string dest) {
+int moveFile(std::string file, std::string dest, std::string logFileName) {
    std::string fileName = SplitFilename(file);
    std::vector<char> fileContent;
    //TODO - it would be nice to check whether the new file has the same size as the new one has
@@ -391,6 +406,7 @@ int moveFile(std::string file, std::string dest) {
       }
    } else {
       // Subor neexistuje
+      std::cout << "Subor " << file << " neexistuje" << std::endl;
       return 2;
    }
    // Making string containing the content of file to be copied
@@ -419,7 +435,45 @@ int moveFile(std::string file, std::string dest) {
       // vznikol error pri mazani
       return 5;
    }
+
+   if (logFileName != "") {
+      std::string toBeWritten("");
+      toBeWritten.append(fileName)
+                  .append("\n")
+                  .append(file)
+                  .append("\n")
+                  .append(pathToNewFile)
+                  .append("\n");
+      // std::ifstream infile(logFileName.c_str());
+      std::ofstream fout;
+      fout.open(logFileName,ios::app);
+      fout<<toBeWritten;
+      fout.close();
+   }
+
    return 0;
+}
+
+bool deleteFromLog(std::string fileName) {
+   std::string line("");
+   std::string toBeWritten("");
+   std::string from("");
+   std::string to("");
+   std::ifstream fin("log.txt");
+   while (std::getline(fin, line)) {
+      getline(fin, from);
+      getline(fin, to);
+      if (line != fileName) {
+         toBeWritten.append(line).append("\n")
+                     .append(from).append("\n")
+                     .append(to).append("\n");
+      }
+   }
+   fin.close();
+   std::ofstream fout("log.txt");
+   fout<<toBeWritten;
+   fout.close();
+   return true;
 }
 
 /**
@@ -428,16 +482,16 @@ int moveFile(std::string file, std::string dest) {
 bool userAuthenticated(std::vector<EmailsStruct>& emails) {
    // std::vector<EmailsStruct> emails;
    std::vector<std::string> fileNames;
-   int mvRet;
+   int retc;
    if (mtx.try_lock()) {
       // mutex is free, so I locked it and let's do some stuff
       readDirectory("Maildir/new", fileNames);           // reading new emails
 
       for (int i = 0; i < fileNames.size(); ++i) {
-         // moving the files from new to cur
-         if ((mvRet = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/")) != 0) {
-            // TODO - co teraz?
-            std::cout << "Some problem with deleting file " << fileNames.at(i) << " errcode(" << mvRet << ")" << std::endl;
+      // moving the files from new to cur
+         if ((retc = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/", "log.txt")) != 0) {
+         // TODO - presun suboru nevysiel, co teraz?
+            ;
          }
       }
 
@@ -450,6 +504,7 @@ bool userAuthenticated(std::vector<EmailsStruct>& emails) {
          fileNameWithPath.append(fileNames.at(i));
          tmp.size = filesize(fileNameWithPath.c_str());
          tmp.toBeDeleted = false;
+         tmp.hash = md5(fileNames.at(i));
          emails.push_back(tmp);
          std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
          emails.at(i);
@@ -492,6 +547,20 @@ Command getCommand(std::string message) {
       toBeReturned.secondArg  = arguments.substr(arguments.find(" ")+1, arguments.length()-arguments.find(" "));
    } else if (usersCommand == "STAT") {
       toBeReturned.name    = cmd_stat;
+   } else if (usersCommand == "RETR") {
+      if (checkForSpaceAfterCommand(message) && isNumeric(message.substr(5, message.length()-7).c_str(), 10)) {
+         toBeReturned.name    = cmd_retr;
+         toBeReturned.firstArg = message.substr(5, message.length()-7);
+      }
+   } else if (usersCommand == "UIDL") {
+      toBeReturned.name       = cmd_uidl;
+      if (checkForSpaceAfterCommand(message)) {
+         toBeReturned.firstArg = message.substr(5, message.length()-7);
+         if (!isNumeric(toBeReturned.firstArg.c_str(), 10)) {
+            toBeReturned.firstArg.clear();
+            // std::string arguments = message.substr(5, message.length()-7); // TODO - why is this line here?
+         }
+      }
    } else if (usersCommand == "LIST") {
       toBeReturned.name       = cmd_list;
       if (checkForSpaceAfterCommand(message)) {
@@ -521,8 +590,33 @@ void printEmails(std::vector<EmailsStruct> emails) {
       std::cout << emails.at(i).fileName << std::endl;
       std::cout << emails.at(i).size << std::endl;
       std::cout << emails.at(i).toBeDeleted << std::endl;
+      std::cout << emails.at(i).hash << std::endl;
    }
 }
+
+/**
+ * @brief      This function adds termination octet before termination octet
+ *             in "\n.\r\n" or "\n.\n" substring of argument toBeHandled
+ *
+ * @param[in]  toBeHandled  String to be searched for "\n.\r\n" or "\n.\n" substring
+ *
+ * @return     Returns the converted string, from "\n.\r\n" is "\n..\r\n" and from "\n.\n" happens "\n..\n"
+ */
+std::string replaceSingleDot(std::string toBeHandled) {
+   char actualChar;
+   char prevPrevChar = toBeHandled[0];
+   char prevChar = toBeHandled[1];
+   for (unsigned int i = 2; i < toBeHandled.length(); ++i) {
+      actualChar = toBeHandled[i];
+      if (prevPrevChar == '\n' && prevChar == '.' && (actualChar == '\n' || actualChar == '\r') ) {
+         toBeHandled.insert(i-1, ".");
+      }
+      prevPrevChar = prevChar;
+      prevChar = actualChar;
+   }
+   return toBeHandled;
+}
+
 
 std::string process_message(std::string message, ssize_t n, argumentsForThreadStructure* threadArgs) {
    
@@ -685,6 +779,38 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   }
                }
             }
+         } else if (getCommand(message).name == cmd_uidl) {
+            if (actualCommand.firstArg == "") {
+               toBeReturned.append("+OK\r\n");
+               for (int i = 0; i < threadArgs->emails.size(); ++i) {
+                  if (!threadArgs->emails.at(i).toBeDeleted) {
+                     toBeReturned.append(to_string(i+1))
+                                 .append(" ")
+                                 .append(threadArgs->emails.at(i).hash)
+                                 .append("\r\n");
+                  }
+               }
+               toBeReturned.append(".\r\n");
+            } else {
+               int i_dec = std::stoi (actualCommand.firstArg, NULL);
+               if (i_dec > static_cast<int>(threadArgs->emails.size())) {
+                  toBeReturned.append("-ERR no such message, only ")
+                              .append(std::to_string(static_cast<int>(threadArgs->emails.size())))
+                              .append(" messages in maildrop\r\n");
+               } else if (i_dec < 1) {
+                  toBeReturned.append("-ERR message ID must be greater than zero\r\n");
+               } else {
+                  if (!threadArgs->emails.at(i_dec-1).toBeDeleted) {
+                     toBeReturned.append("OK+ ")
+                                 .append(actualCommand.firstArg)
+                                 .append(" ")
+                                 .append(threadArgs->emails.at(i_dec-1).hash)
+                                 .append("\r\n");
+                  } else {
+                     toBeReturned.append("ERR- message not found\r\n");
+                  }
+               }
+            }
          } else if (getCommand(message).name == cmd_dele) {
             int mailID;
             mailID = std::stoi (actualCommand.firstArg, NULL);
@@ -703,7 +829,26 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                            .append(" already deleted ");
                }
             }
+         } else if (actualCommand.name == cmd_retr) {
+            std::string filePath = threadArgs->params->maildirPath;
+            int mailID;
+            mailID = std::stoi (actualCommand.firstArg, NULL);
 
+            if (mailID < 1 || mailID > threadArgs->emails.size()) {  // 0 < message id <= vectorsize
+               toBeReturned.append("-ERR no such message\r\n");
+            } else {
+               if (!threadArgs->emails.at(mailID-1).toBeDeleted) {
+                  filePath.append("/cur/").append(threadArgs->emails.at(mailID-1).fileName);
+                  toBeReturned.append("+OK\r\n");
+                  toBeReturned.append(getFileContent(filePath));
+                  toBeReturned = replaceSingleDot(toBeReturned);
+                  toBeReturned.append(".\r\n");
+               } else {
+                  toBeReturned.append("-ERR message ")
+                              .append(actualCommand.firstArg)
+                              .append(" is deleted\r\n");
+               }
+            }
          } else if (actualCommand.name == cmd_quit) {
             threadArgs->sessionState = state_UPDATE;
             toBeReturned.append(process_message("", 0, threadArgs));
@@ -723,12 +868,12 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   if( remove(filePath.c_str()) != 0 ) {
                      // TODO - co teraz?
                      notRemovedFlag = true;
-                     std::cout << "Nepodarilo sa mi zmazat email " << filePath << std::endl;
+                  } else {
+                     deleteFromLog(SplitFilename(filePath));
                   }
                }
             }
          }
-         // TODO - teraz by sa mala vratit odpoved klientovi v zmysle ""
          if (notRemovedFlag) {
             toBeReturned.append("-ERR some deleted messages not removed\r\n");
          } else {
@@ -841,29 +986,8 @@ void *service(void *threadid) {
       recievedMessage.clear();
    }
 
-
-
-
-   // while ((n = read(my_data->acceptedSockDes, buf, MAX_BUFFER_SIZE)) > 0) {
-   //    for (int i = 0; i < n; ++i) {
-   //       recievedMessage += buf[i];
-   //    }
-   //    std::string response = process_message(recievedMessage, n, my_data);
-   //    std::cout << "My actual state is " << my_data->sessionState << std::endl;
-      
-   //    r = write(my_data->acceptedSockDes, response.c_str(), response.length());
-   //    recievedMessage.clear();
-   //    if (r == -1)
-   //       err(1, "write()");
-   //    if (r != response.length())
-   //       errx(1, "write(): Buffer written just partially");
-   // }
-   // if (n == -1)
-   //    err(1, "read()");
-
-
-   printf("clxxose(connectfd)\n");
-   close(my_data->acceptedSockDes);
+   // printf("clxxose(connectfd)\n");
+   // close(my_data->acceptedSockDes);
 }
 
 int main(int argc, char *argv[])
@@ -877,6 +1001,26 @@ int main(int argc, char *argv[])
    params.reset = false;
 
    handleArguments(argc, argv, params.authFile, params.clearPass, params.port, params.maildirPath, params.reset);
+
+   if (params.reset) {
+      std::ifstream fin("log.txt");
+      std::string line("");
+      while (std::getline(fin, line)) {
+         std::string from;
+         std::string to;
+         getline(fin, to);
+         getline(fin, from);
+         to = SplitPath(to);
+         int ret = moveFile(from, to, "");
+         std::cout << ret << std::endl;
+         std::cout << "hello world!" << std::endl;
+         std::cout << "from: --->" << from << "<---" << std::endl;
+         std::cout << "  to: --->" << to << "<---" <<  std::endl;
+         remove(from.c_str());
+      }
+      remove("log.txt");
+      return 0;
+   }
 
    if (params.authFile != "") {
       std::string authFileContent = getFileContent(params.authFile);
