@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <mutex>          // std::mutex
 #include <map>            // std::map
+#include <csignal>
 #include "md5.h"
 
 using namespace std;
@@ -88,6 +89,7 @@ typedef struct cmd {
 } Command;
 
 std::vector<ArgsToThread*> threadArgsVec;
+std::map<pthread_t,int> threadSockMap;
 fd_set readset, tempset;
 std::mutex mtx;           // mutex for critical section
 
@@ -479,28 +481,28 @@ bool deleteFromLog(std::string fileName) {
 /**
  * @brief      TODO
  */
-bool userAuthenticated(std::vector<EmailsStruct>& emails) {
+bool userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* params) {
    // std::vector<EmailsStruct> emails;
    std::vector<std::string> fileNames;
    int retc;
    if (mtx.try_lock()) {
       // mutex is free, so I locked it and let's do some stuff
-      readDirectory("Maildir/new", fileNames);           // reading new emails
+      readDirectory(params->maildirPath + "/new", fileNames);           // reading new emails
 
       for (int i = 0; i < fileNames.size(); ++i) {
       // moving the files from new to cur
-         if ((retc = moveFile("Maildir/new/" + fileNames.at(i), "Maildir/cur/", "log.txt")) != 0) {
+         if ((retc = moveFile(params->maildirPath + "/new/" + fileNames.at(i), params->maildirPath + "/cur/", "log.txt")) != 0) {
          // TODO - presun suboru nevysiel, co teraz?
             ;
          }
       }
 
       fileNames.clear();
-      readDirectory("Maildir/cur", fileNames);
+      readDirectory(params->maildirPath + "/cur", fileNames);
       for (int i = 0; i < fileNames.size(); ++i) {
          EmailsStruct tmp;
          tmp.fileName = fileNames.at(i);
-         std::string fileNameWithPath("Maildir/cur/");
+         std::string fileNameWithPath(params->maildirPath + "/cur/");
          fileNameWithPath.append(fileNames.at(i));
          tmp.size = filesize(fileNameWithPath.c_str());
          tmp.toBeDeleted = false;
@@ -664,7 +666,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
          if (getCommand(message).name == cmd_pass) {
             if (threadArgs->params->password == actualCommand.firstArg) {
-               if (userAuthenticated(threadArgs->emails)) {
+               if (userAuthenticated(threadArgs->emails, threadArgs->params)) {
                   // User presiel cez mutex a vzal si ho
                   std::cout << "User authenticated, lets go further";
                   threadArgs->sessionState = state_TRANSACTION;
@@ -697,7 +699,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   threadArgs->sessionState = state_TRANSACTION;
                   // TODO - userAuthenticated mi vracia true/false podla toho, ci uzivatel presiel
                   // cez mutex, dorob
-                  userAuthenticated(threadArgs->emails);
+                  userAuthenticated(threadArgs->emails, threadArgs->params);
                } else {
                   toBeReturned = "-ERR\r\n";
                }
@@ -911,6 +913,7 @@ void *service(void *threadid) {
    std::cout << my_data->timestamp << std::endl;
    std::cout << my_data << std::endl;
    my_data->threadID = pthread_self();
+   std::cout << "***************************\n" << my_data->threadID << "\n***************************\n" << std::endl;
    int socDescriptor = my_data->acceptedSockDes;
 
    // Initialisation of parameters for select function
@@ -939,6 +942,7 @@ void *service(void *threadid) {
          deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
          close(socDescriptor);
+         threadSockMap.erase(my_data->threadID);
          mtx.unlock();
          pthread_exit(NULL);
       } else if (selectResult < 0) {
@@ -969,6 +973,7 @@ void *service(void *threadid) {
             deleteFromArgsVector(my_data->timestamp);
             FD_CLR(socDescriptor, &readset);
             close(socDescriptor);
+            threadSockMap.erase(my_data->threadID);
             mtx.unlock();
             pthread_exit(NULL);
          }
@@ -980,6 +985,7 @@ void *service(void *threadid) {
          deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
          close(socDescriptor);
+         threadSockMap.erase(my_data->threadID);
          mtx.unlock();
          pthread_exit(NULL);
       }
@@ -990,9 +996,37 @@ void *service(void *threadid) {
    // close(my_data->acceptedSockDes);
 }
 
+
+/**
+ * @brief      Closes all connections, cancels all threads,
+ *             unlocks mutex and deallocates all arguments
+ *             to threads stored in threadArgsVec
+ *             
+ *
+ * @param[in]  signum  The signum
+ */
+void signalHandler(int signum) {
+   // TODO - mal by som overovat, ci je to SIGINT?
+   std::map<pthread_t,int>::iterator it;
+   for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
+      close(it->second);
+      pthread_cancel(it->first);
+   }
+   mtx.unlock();
+   for (int i = 0; i < threadArgsVec.size(); ++i) {
+         delete threadArgsVec.at(i);
+   }
+   threadArgsVec.clear();
+   exit(0);
+}
+
 int main(int argc, char *argv[])
 {
+   signal(SIGINT, signalHandler);
    
+   std::cout << "V threadArgsVec je " << threadArgsVec.size() << " prvkov" << std::endl;
+
+
    Parameters params;
    params.authFile.clear();
    params.clearPass = false;
@@ -1128,10 +1162,13 @@ int main(int argc, char *argv[])
             threadArgs->timestamp = lastTimestamp;
             threadArgsVec.push_back(threadArgs);
 
-            std::cout << "Sending this timestamp to thread " << threadArgs->timestamp << std::endl;
-            std::cout << "Vektor ma momentalne tolkoto prvkov:  " << threadArgsVec.size() << std::endl;
-
+            // TODO - toto by som asi mal mazat pri ukoncovani threadu
+            // mal by som to supnut aj do threadArgs, pretoze ak sa ukonci dany thread
+            // (napr. cez QUIT), tak potrebujem zrusit prislusnu dvojicu v threadSockMap
+            // inak nebudem vediet, ktora dvojica patri mojmu vlaknu a nebudem vediet, co vymazat
+            // alebo mozno aj nie? Uvidime
             pthread_t recievingThread;
+            std::cout << "~~~~~" << recievingThread << "~~~~~" << std::endl;
             int thread_ret_code;
             if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)threadArgsVec.at(threadArgsVec.size()-1))) != 0) {
                   // TODO - co robit v takomto pripade?
@@ -1140,6 +1177,14 @@ int main(int argc, char *argv[])
                fprintf(stderr,"ERROR: Couldn't create new thread for new connection\n");
                exit(EXIT_FAILURE);
             }
+            sleep(2);
+            std::cout << "*-*-*-*-*-*" << recievingThread << "*-*-*-*-*-*" << std::endl;
+            threadSockMap[recievingThread] = threadArgs->acceptedSockDes;
+            std::map<pthread_t,int>::iterator it;
+            for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
+              std::cout << "mehehe" << it->first << " => " << it->second << '\n';
+            }
+
             /*-----------------------*/
          }
       }      // end else if (result > 0)
