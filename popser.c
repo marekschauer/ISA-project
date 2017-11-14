@@ -30,7 +30,9 @@ using namespace std;
 #endif
 #define QUEUE  (2)
 
-
+/**
+ * Enum for commands
+ */
 typedef enum {
    cmd_user,
    cmd_pass,
@@ -47,6 +49,9 @@ typedef enum {
    cmd_unknown
 } CommandName;
 
+/**
+ * Enum for states of server
+ */
 typedef enum {
    state_USER_REQUIRED,
    state_WRONG_USERNAME,
@@ -56,6 +61,9 @@ typedef enum {
    state_UPDATE
 } SessionState;
 
+/**
+ * Structure that represents one email
+ */
 typedef struct emails {
    std::string fileName;
    uint size;
@@ -63,6 +71,9 @@ typedef struct emails {
    std::string hash;
 } EmailsStruct;
 
+/**
+ * Structure that contains program parameters
+ */
 typedef struct programParameters {
    std::string authFile;
    bool clearPass;
@@ -73,6 +84,9 @@ typedef struct programParameters {
    std::string password;
 } Parameters;
 
+/**
+ * Container for arguments to thread
+ */
 typedef struct argumentsForThreadStructure {
    int acceptedSockDes;
    SessionState sessionState;
@@ -82,6 +96,9 @@ typedef struct argumentsForThreadStructure {
    pthread_t threadID;
 } ArgsToThread;
 
+/**
+ * Structure representing one command
+ */
 typedef struct cmd {
    CommandName name;
    std::string firstArg;
@@ -91,6 +108,7 @@ typedef struct cmd {
 std::vector<ArgsToThread*> threadArgsVec;
 std::map<pthread_t,int> threadSockMap;
 fd_set readset, tempset;
+int listenfd;
 std::mutex mtx;           // mutex for critical section
 
 /**
@@ -456,7 +474,14 @@ int moveFile(std::string file, std::string dest, std::string logFileName) {
    return 0;
 }
 
-bool deleteFromLog(std::string fileName) {
+/**
+ * @brief      This function deletes log for
+ *             certain file in log.txt file
+ *
+ * @param[in]  fileName  The file name, that should be deleted from log
+ *
+ */
+void deleteFromLog(std::string fileName) {
    std::string line("");
    std::string toBeWritten("");
    std::string from("");
@@ -475,19 +500,29 @@ bool deleteFromLog(std::string fileName) {
    std::ofstream fout("log.txt");
    fout<<toBeWritten;
    fout.close();
-   return true;
 }
 
 /**
- * @brief      TODO
+ * @brief      This function is called, when user is authenticated.
+ *             It locks mutex and moves all files from Maildir/new to Maildir/cur
+ *
+ * @param      emails  The emails struct to be filled
+ * @param      params  The parameters (because of path to maildir given as program parameters)
+ *
+ * @return     Returns 0 if user has access to mutex, 1 if mutex is already taken, 2 if new/ or new/ in Maildir does not exist
  */
-bool userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* params) {
+int userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* params) {
    // std::vector<EmailsStruct> emails;
    std::vector<std::string> fileNames;
    int retc;
    if (mtx.try_lock()) {
       // mutex is free, so I locked it and let's do some stuff
+      if (directoryExists(params->maildirPath + "/new") == 0 || directoryExists(params->maildirPath + "/cur") == 0) {
+         mtx.unlock();
+         return 2;
+      }
       readDirectory(params->maildirPath + "/new", fileNames);           // reading new emails
+
 
       for (int i = 0; i < fileNames.size(); ++i) {
       // moving the files from new to cur
@@ -511,25 +546,39 @@ bool userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* par
          std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
          emails.at(i);
       }   
-      return true;
+      return 0;
    } else {
       // mutex is locked
-      return false;
+      return 1;
    }
    
 }
 
+/**
+ * @brief      Checks for space after command
+ *
+ * @param[in]  message  The message
+ *
+ * @return     True if there is a space (ASCII value 32) on 5th position, false otherwise
+ */
 bool checkForSpaceAfterCommand(std::string message) {
    return (message.substr(4,1) == " ") ? true : false;
 }
 
+/**
+ * @brief      Gets the command from string, case insensitive
+ *
+ * @param[in]  message  The message
+ *
+ * @return     The command.
+ */
 Command getCommand(std::string message) {
    Command toBeReturned;
    toBeReturned.name = cmd_unknown;
    toBeReturned.firstArg.clear();
    toBeReturned.secondArg.clear();
 
-   if (message.empty()) {
+   if (message.empty() || message.length() < 4) {
       return toBeReturned;
    }
 
@@ -582,7 +631,7 @@ Command getCommand(std::string message) {
    } else if (usersCommand == "QUIT") {
       toBeReturned.name       = cmd_quit;
    }
-   
+
    return toBeReturned;
 }
 
@@ -619,30 +668,39 @@ std::string replaceSingleDot(std::string toBeHandled) {
    return toBeHandled;
 }
 
-
-std::string process_message(std::string message, ssize_t n, argumentsForThreadStructure* threadArgs) {
+/**
+ * @brief      This function processes the message
+ * 
+ *
+ * @param[in]  message     The message from client
+ * @param      threadArgs  The thread arguments
+ *
+ * @return     { description_of_the_return_value }
+ */
+std::string process_message(std::string message, argumentsForThreadStructure* threadArgs) {
    
+   Command actualCommand = getCommand(message);
    std::cout << "----------------------------------------------" << std::endl;
-   std::cout << "Prisiel mi command no. " << getCommand(message).name << std::endl;
-   std::cout << "Prvy argument: ------->" << getCommand(message).firstArg << std::endl;
-   std::cout << "Druhy argument: ------>" << getCommand(message).secondArg << std::endl;
+   std::cout << "Prisiel mi command no. " << actualCommand.name << std::endl;
+   std::cout << "Prvy argument: ------->" << actualCommand.firstArg << std::endl;
+   std::cout << "Druhy argument: ------>" << actualCommand.secondArg << std::endl;
    std::cout << "Je zapnuta podpora prenosu hesla v nesifrovanej podobe? " << threadArgs->params->clearPass << std::endl;
    std::string toBeReturned("");
    toBeReturned.clear();
-   Command actualCommand = getCommand(message);
 
    switch(threadArgs->sessionState) {
       case state_USER_REQUIRED:
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
-         if (getCommand(message).name == cmd_user && threadArgs->params->clearPass) {
+         if (actualCommand.name == cmd_user && threadArgs->params->clearPass) {
             toBeReturned = "+OK\r\n";
             if (threadArgs->params->username == actualCommand.firstArg) {
                threadArgs->sessionState = state_PASSWORD_REQUIRED;
             } else {
                threadArgs->sessionState = state_WRONG_USERNAME;
             }
-         } else if (actualCommand.name != cmd_quit) {
+         } else if (actualCommand.name == cmd_quit) {
             // Here will be QUIT handling
+            toBeReturned.append("+OK\r\n");
          } else if (actualCommand.name != cmd_unknown) {
             toBeReturned = "-ERR, unexpected command, expecting USER\r\n";
          } else {
@@ -655,6 +713,8 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
          threadArgs->sessionState = state_USER_REQUIRED;
          if (actualCommand.name == cmd_pass) {
             toBeReturned = "-ERR sorry, no mailbox for these credetials\r\n";
+         } else if (actualCommand.name == cmd_quit) {
+            toBeReturned.append("+OK\r\n");
          } else if (actualCommand.name != cmd_unknown) {
             toBeReturned = "-ERR, unexpected command, expected PASS, now expecting USER\r\n";
          } else {
@@ -664,22 +724,28 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
          break;
       case state_PASSWORD_REQUIRED:
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
-         if (getCommand(message).name == cmd_pass) {
+         if (actualCommand.name == cmd_pass) {
             if (threadArgs->params->password == actualCommand.firstArg) {
-               if (userAuthenticated(threadArgs->emails, threadArgs->params)) {
+               int retUA = userAuthenticated(threadArgs->emails, threadArgs->params);
+               if (retUA == 0) {
                   // User presiel cez mutex a vzal si ho
-                  std::cout << "User authenticated, lets go further";
                   threadArgs->sessionState = state_TRANSACTION;
                   toBeReturned = "+OK\r\n";
                } else {
                   // Mutex already taken
                   threadArgs->sessionState = state_USER_REQUIRED;
-                  toBeReturned = "+OK, but mutex is locked\r\n";
+                  if (retUA == 1) {
+                     toBeReturned = "-ERR, mutex is locked, try to log in again\r\n";
+                  } else if (retUA == 2) {
+                     toBeReturned = "-ERR, problem with Maildir, try to log in again\r\n";
+                  }
                }
             } else {
                threadArgs->sessionState = state_USER_REQUIRED;
                toBeReturned = "-ERR sorry, no mailbox for these credetials\r\n";
             }
+         } else if (actualCommand.name == cmd_quit) {
+            toBeReturned.append("+OK\r\n");
          } else if (actualCommand.name != cmd_unknown) {
             threadArgs->sessionState = state_USER_REQUIRED;
             toBeReturned = "-ERR, unexpected command, expected PASS, now expecting USER\r\n";
@@ -690,22 +756,34 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
          }
          break;
       case state_APOP_REQUIRED:
-         if (getCommand(message).name == cmd_apop) {
+         if (actualCommand.name == cmd_apop) {
             if (threadArgs->params->username == actualCommand.firstArg) {
                // Now user is ok, let's test hash equality
                std::string myHash = md5(threadArgs->timestamp + threadArgs->params->password);
                if (myHash == actualCommand.secondArg) {
-                  toBeReturned = "+OK\r\n";
-                  threadArgs->sessionState = state_TRANSACTION;
-                  // TODO - userAuthenticated mi vracia true/false podla toho, ci uzivatel presiel
                   // cez mutex, dorob
-                  userAuthenticated(threadArgs->emails, threadArgs->params);
+                  int retUA = userAuthenticated(threadArgs->emails, threadArgs->params);
+                  if (retUA == 0) {
+                  // User presiel cez mutex a vzal si ho
+                     threadArgs->sessionState = state_TRANSACTION;
+                     toBeReturned = "+OK\r\n";
+                  } else {
+                  // Mutex already taken
+                     threadArgs->sessionState = state_APOP_REQUIRED;
+                     if (retUA == 1) {
+                        toBeReturned = "-ERR, mutex is locked, try to log in again\r\n";
+                     } else if (retUA == 2) {
+                        toBeReturned = "-ERR, problem with Maildir, try to log in again\r\n";
+                     }
+                  }
                } else {
                   toBeReturned = "-ERR\r\n";
                }
             } else {
                toBeReturned = "-ERR\r\n";
             }
+         } else if (actualCommand.name == cmd_quit) {
+            toBeReturned.append("+OK\r\n");
          } else {
             // som v stave state_APOP_REQUIRED a neprisiel mi prikaz pass
             toBeReturned = "-ERR Unknown command, expecting apop\r\n";
@@ -713,13 +791,12 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
          break;
       case state_TRANSACTION:
          // TODO - moze mi sem prist aj prikaz QUIT, dorob
-         if (getCommand(message).name == cmd_stat) {
+         if (actualCommand.name == cmd_stat) {
             int numberOfEmails   = 0;
             int sizeOfEmails     = 0;
             printEmails(threadArgs->emails);
             for (int i = 0; i < threadArgs->emails.size(); ++i) {
                if (!threadArgs->emails.at(i).toBeDeleted) {
-                  std::cout << "SOM TU a nehanbim sa za to" << std::endl;
                   numberOfEmails++;
                   sizeOfEmails += threadArgs->emails.at(i).size;
                }
@@ -729,7 +806,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                      .append(" ")
                      .append(to_string(sizeOfEmails))
                      .append("\r\n");
-         } else if (getCommand(message).name == cmd_list) {
+         } else if (actualCommand.name == cmd_list) {
             // TODO - vyradit z vypisu tie emaily, ktore su oznacene na vymazanie
             //       - asi spravene, over este
             // TODO - osetrovat pristupy do vektora, aby som nedaval index mimo hranice
@@ -771,7 +848,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   toBeReturned.append("-ERR message ID must be greater than zero\r\n");
                } else {
                   if (!threadArgs->emails.at(i_dec-1).toBeDeleted) {
-                     toBeReturned.append("OK+ ")
+                     toBeReturned.append("+OK ")
                                  .append(actualCommand.firstArg)
                                  .append(" ")
                                  .append(std::to_string(threadArgs->emails.at(i_dec-1).size))
@@ -781,7 +858,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   }
                }
             }
-         } else if (getCommand(message).name == cmd_uidl) {
+         } else if (actualCommand.name == cmd_uidl) {
             if (actualCommand.firstArg == "") {
                toBeReturned.append("+OK\r\n");
                for (int i = 0; i < threadArgs->emails.size(); ++i) {
@@ -803,7 +880,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   toBeReturned.append("-ERR message ID must be greater than zero\r\n");
                } else {
                   if (!threadArgs->emails.at(i_dec-1).toBeDeleted) {
-                     toBeReturned.append("OK+ ")
+                     toBeReturned.append("+OK ")
                                  .append(actualCommand.firstArg)
                                  .append(" ")
                                  .append(threadArgs->emails.at(i_dec-1).hash)
@@ -813,7 +890,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                   }
                }
             }
-         } else if (getCommand(message).name == cmd_dele) {
+         } else if (actualCommand.name == cmd_dele) {
             int mailID;
             mailID = std::stoi (actualCommand.firstArg, NULL);
 
@@ -828,7 +905,7 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                } else {
                   toBeReturned.append("-ERR message ")
                            .append(actualCommand.firstArg)
-                           .append(" already deleted ");
+                           .append(" already deleted\r\n");
                }
             }
          } else if (actualCommand.name == cmd_retr) {
@@ -840,11 +917,13 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
                toBeReturned.append("-ERR no such message\r\n");
             } else {
                if (!threadArgs->emails.at(mailID-1).toBeDeleted) {
+                  std::cout << "fileName..." << threadArgs->emails.at(mailID-1).fileName << std::endl;
+                  std::cout << "UIDL..." << threadArgs->emails.at(mailID-1).hash << std::endl;
                   filePath.append("/cur/").append(threadArgs->emails.at(mailID-1).fileName);
                   toBeReturned.append("+OK\r\n");
                   toBeReturned.append(getFileContent(filePath));
                   toBeReturned = replaceSingleDot(toBeReturned);
-                  toBeReturned.append(".\r\n");
+                  toBeReturned.append("\r\n.\r\n");
                } else {
                   toBeReturned.append("-ERR message ")
                               .append(actualCommand.firstArg)
@@ -853,9 +932,13 @@ std::string process_message(std::string message, ssize_t n, argumentsForThreadSt
             }
          } else if (actualCommand.name == cmd_quit) {
             threadArgs->sessionState = state_UPDATE;
-            toBeReturned.append(process_message("", 0, threadArgs));
-         } else if (getCommand(message).name == cmd_noop) {
+            toBeReturned.append(process_message("", threadArgs));
+         } else if (actualCommand.name == cmd_noop) {
             toBeReturned.append("+OK\r\n");
+         } else if (actualCommand.name == cmd_unknown) {
+            toBeReturned.append("-ERR, unknown command\r\n");
+         } else {
+            toBeReturned.append("-ERR, invalid command\r\n");
          }
          break;
       case state_UPDATE:
@@ -933,7 +1016,7 @@ void *service(void *threadid) {
 
    while(1) {
       memcpy(&threadTempset, &descriptorSet, sizeof(threadTempset));
-      tmvl.tv_sec = 30;
+      tmvl.tv_sec = 600;
       tmvl.tv_usec = 0;
       selectResult = select(socDescriptor+1, &threadTempset, NULL, NULL, &tmvl);
 
@@ -979,8 +1062,9 @@ void *service(void *threadid) {
          }
       }
 
-      std::string response = process_message(recievedMessage, recievedMessage.length(), my_data);
-      write(socDescriptor, response.c_str(), response.length());
+      std::string response = process_message(recievedMessage, my_data);
+      std::cout << "How long is the message?..." << response.size() << std::endl;
+      std::cout << "Write returned ... " << write(socDescriptor, response.c_str(), response.size()) << std::endl;
       if (getCommand(recievedMessage).name == cmd_quit && response == "+OK\r\n") {
          deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
@@ -1007,17 +1091,21 @@ void *service(void *threadid) {
  */
 void signalHandler(int signum) {
    // TODO - mal by som overovat, ci je to SIGINT?
-   std::map<pthread_t,int>::iterator it;
-   for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
-      close(it->second);
-      pthread_cancel(it->first);
-   }
-   mtx.unlock();
-   for (int i = 0; i < threadArgsVec.size(); ++i) {
-         delete threadArgsVec.at(i);
-   }
-   threadArgsVec.clear();
-   exit(0);
+	int ret;
+	std::map<pthread_t,int>::iterator it;
+	for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
+		std::cout << "Idem zavriet vlakno s descriptorom " << it->second << std::endl;
+		ret = close(it->second);
+		std::cout << "Podarilo sa? " << ret << std::endl;
+		pthread_cancel(it->first);
+	}
+	std::cout << "Ako dopadol close na listenfd? " << close(listenfd) << std::endl;
+	mtx.unlock();
+	for (int i = 0; i < threadArgsVec.size(); ++i) {
+		delete threadArgsVec.at(i);
+	}
+	threadArgsVec.clear();
+	exit(0);
 }
 
 int main(int argc, char *argv[])
@@ -1046,15 +1134,12 @@ int main(int argc, char *argv[])
          getline(fin, from);
          to = SplitPath(to);
          int ret = moveFile(from, to, "");
-         std::cout << ret << std::endl;
-         std::cout << "hello world!" << std::endl;
-         std::cout << "from: --->" << from << "<---" << std::endl;
-         std::cout << "  to: --->" << to << "<---" <<  std::endl;
          remove(from.c_str());
       }
       remove("log.txt");
       return 0;
    }
+
 
    if (params.authFile != "") {
       std::string authFileContent = getFileContent(params.authFile);
@@ -1063,7 +1148,6 @@ int main(int argc, char *argv[])
    }
 
    /*=============================================================*/
-   int listenfd;
    
    struct sockaddr_in server;
    struct hostent *hostent;
@@ -1081,6 +1165,10 @@ int main(int argc, char *argv[])
    printf("socket(...)\n");
    if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
       err(1, "socket()");
+   }
+   int enabled = 1;
+   if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(int)) < 0) {
+      err(1, "setsockopt()");
    }
 
    int flags = fcntl(listenfd, F_GETFL, 0);
@@ -1120,12 +1208,12 @@ int main(int argc, char *argv[])
 
    do {
       memcpy(&tempset, &readset, sizeof(tempset));
-      tv.tv_sec = 5;
+      tv.tv_sec = 1;
       tv.tv_usec = 0;
       result = select(maxfd + 1, &tempset, NULL, NULL, &tv);
 
       if (result == 0) {
-         printf("select() timed out!\n");
+         // printf("select() timed out!\n");
       }
       else if (result < 0 && errno != EINTR) {
          printf("Error in select(): %s\n", strerror(errno));
@@ -1177,8 +1265,6 @@ int main(int argc, char *argv[])
                fprintf(stderr,"ERROR: Couldn't create new thread for new connection\n");
                exit(EXIT_FAILURE);
             }
-            sleep(2);
-            std::cout << "*-*-*-*-*-*" << recievingThread << "*-*-*-*-*-*" << std::endl;
             threadSockMap[recievingThread] = threadArgs->acceptedSockDes;
             std::map<pthread_t,int>::iterator it;
             for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
