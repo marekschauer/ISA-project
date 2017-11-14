@@ -20,6 +20,7 @@
 #include <mutex>          // std::mutex
 #include <map>            // std::map
 #include <csignal>
+#include <errno.h>
 #include "md5.h"
 
 using namespace std;
@@ -1064,7 +1065,25 @@ void *service(void *threadid) {
 
       std::string response = process_message(recievedMessage, my_data);
       std::cout << "How long is the message?..." << response.size() << std::endl;
-      std::cout << "Write returned ... " << write(socDescriptor, response.c_str(), response.size()) << std::endl;
+      int sent = 0;
+      int sent_tmp;
+      int size = response.length();
+      // Pred tym, nez sa dostanem na write, daj select
+      while (size > sent) {
+         errno = 0;
+         sent_tmp = write(socDescriptor, response.substr(sent, size-sent+1).c_str(), size-sent+1);
+         if (sent_tmp != -1) {
+            sent += sent_tmp;
+         } else {
+            std::cout << std::strerror(errno) << std::endl;
+            usleep(10000);
+         }
+         std::cout << "--------------------------" << std::endl;
+         std::cout << "sent_tmp..." << sent_tmp << std::endl;
+         std::cout << "sent......." << sent << std::endl;
+         std::cout << "size......." << size << std::endl;
+      }
+      // std::cout << "Write returned ... " << write(socDescriptor, response.c_str(), response.size()) << std::endl;
       if (getCommand(recievedMessage).name == cmd_quit && response == "+OK\r\n") {
          deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
