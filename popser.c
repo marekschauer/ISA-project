@@ -181,7 +181,7 @@ bool isNumeric( const char* pszInput, int nNumberBase )
 void handleArguments(int argumentsCount, char** arguments, std::string &authFile, bool &  clearPass, int &  port, std::string &maildirPath, bool & reset) {
    int ch;
    port = -1;
-    authFile = "";            // TODO - ako sa ma defaultne volat autorizacny subor?
+    authFile = "";
     maildirPath = "";
     while ((ch = getopt(argumentsCount, arguments, "ha:cp:d:r")) != -1) {
       switch (ch) {
@@ -211,7 +211,7 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
 
 
     if (reset && argumentsCount > 2) {
-      std::cout << "SOM TU" << endl;
+      // std::cout << "SOM TU" << endl;
       if (port == -1) {
          fprintf(stderr,"ERROR: Argument -p (port) is not given\n");
       } else if (authFile == "") {
@@ -388,6 +388,72 @@ std::ifstream::pos_type filesize(const char* filename) {
 }
 
 /**
+ * @brief      This function formats whole message according to these rules (in this precedence):
+ *                - single "\r" becomes "\r\n"
+ *                - single "\n" becomes "\r\n"
+ *                - "\r\n." becomes "\r\n.."
+ *
+ * @param[in]  toBeHandled  String to be formatted
+ *
+ * @return     Returns the string formatted according to 3 rules stated in brief.
+ */
+std::string formatMessage(std::string toBeHandled) {
+   char prevChar = toBeHandled[0];
+   char actualChar;
+
+   for (unsigned int i = 1; i < toBeHandled.length(); ++i) {
+      actualChar = toBeHandled[i];
+      if (prevChar == '\r' && actualChar != '\n') {
+         toBeHandled.insert(i, "\n");
+         actualChar = '\n';
+      } else if (prevChar != '\r' && actualChar == '\n' ) {
+         // std::cout << "mehehe" << std::endl;
+         toBeHandled.insert(i, "\r");
+         prevChar = '\r';
+         i++;
+      } else if (prevChar == '\n' && actualChar == '.') {
+         toBeHandled.insert(i,".");
+      }
+      prevChar = actualChar;
+   }
+
+   // Single '\r' at the end
+   if (toBeHandled[toBeHandled.length()-1] == '\r') {
+      toBeHandled.append("\n");
+   }
+   return toBeHandled;
+}
+
+/**
+ * @brief      Gets the file size from log.
+ *
+ * @param[in]  fileName  The file name
+ *
+ * @return     The file size from log.
+ */
+int getFileSizeFromLog(std::string fileName) {
+   std::string line("");
+   std::string fileSize("");
+   std::string from("");
+   std::string to("");
+   std::ifstream fin("log.txt");
+   std::string::size_type sz;   // alias of size_t
+   int toBeReturned;
+   while (std::getline(fin, line)) {
+      getline(fin, fileSize);
+      getline(fin, from);
+      getline(fin, to);
+      if (line == fileName) {
+         fin.close();
+         toBeReturned = std::stoi(fileSize,&sz);
+         return toBeReturned;
+      }
+   }
+   fin.close();
+   return -1;
+}
+
+/**
  * @brief      Moves a specified file to specified destination
  *
  * @param[in]  file  The file to be moved
@@ -403,7 +469,6 @@ std::ifstream::pos_type filesize(const char* filename) {
 int moveFile(std::string file, std::string dest, std::string logFileName) {
    std::string fileName = SplitFilename(file);
    std::vector<char> fileContent;
-   //TODO - it would be nice to check whether the new file has the same size as the new one has
    // At first, reading the file and pushing it to the vector of chars.
    if (fileExists(file)) {
       if (fileExists(file)) {
@@ -427,11 +492,13 @@ int moveFile(std::string file, std::string dest, std::string logFileName) {
       }
    } else {
       // Subor neexistuje
-      std::cout << "Subor " << file << " neexistuje" << std::endl;
+      // std::cout << "Subor " << file << " neexistuje" << std::endl;
       return 2;
    }
    // Making string containing the content of file to be copied
    std::string fileContentStr(fileContent.begin(), fileContent.end());
+   unsigned int mailSize;
+   mailSize = formatMessage(fileContentStr).length();
 
    // Making new file and putting in the content of the old one
    std::string pathToNewFile("");
@@ -461,6 +528,8 @@ int moveFile(std::string file, std::string dest, std::string logFileName) {
       std::string toBeWritten("");
       toBeWritten.append(fileName)
                   .append("\n")
+                  .append(to_string(mailSize))
+                  .append("\n")
                   .append(file)
                   .append("\n")
                   .append(pathToNewFile)
@@ -483,16 +552,19 @@ int moveFile(std::string file, std::string dest, std::string logFileName) {
  *
  */
 void deleteFromLog(std::string fileName) {
-   std::string line("");
    std::string toBeWritten("");
+   std::string line("");
+   std::string fileSize("");
    std::string from("");
    std::string to("");
    std::ifstream fin("log.txt");
    while (std::getline(fin, line)) {
+      getline(fin, fileSize);
       getline(fin, from);
       getline(fin, to);
       if (line != fileName) {
          toBeWritten.append(line).append("\n")
+                     .append(fileSize).append("\n")
                      .append(from).append("\n")
                      .append(to).append("\n");
       }
@@ -525,7 +597,7 @@ int userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* para
       readDirectory(params->maildirPath + "/new", fileNames);           // reading new emails
 
 
-      for (int i = 0; i < fileNames.size(); ++i) {
+      for (unsigned int i = 0; i < fileNames.size(); ++i) {
       // moving the files from new to cur
          if ((retc = moveFile(params->maildirPath + "/new/" + fileNames.at(i), params->maildirPath + "/cur/", "log.txt")) != 0) {
          // TODO - presun suboru nevysiel, co teraz?
@@ -535,16 +607,17 @@ int userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* para
 
       fileNames.clear();
       readDirectory(params->maildirPath + "/cur", fileNames);
-      for (int i = 0; i < fileNames.size(); ++i) {
+      for (unsigned int i = 0; i < fileNames.size(); ++i) {
          EmailsStruct tmp;
          tmp.fileName = fileNames.at(i);
          std::string fileNameWithPath(params->maildirPath + "/cur/");
          fileNameWithPath.append(fileNames.at(i));
-         tmp.size = filesize(fileNameWithPath.c_str());
+         tmp.size = (uint) getFileSizeFromLog(fileNames.at(i));
+         // tmp.size = filesize(fileNameWithPath.c_str());
          tmp.toBeDeleted = false;
          tmp.hash = md5(fileNames.at(i));
          emails.push_back(tmp);
-         std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
+         // std::cout << "Email " << emails.at(i).fileName << " has size " << emails.at(i).size << "B" << std::endl;
          emails.at(i);
       }   
       return 0;
@@ -583,8 +656,7 @@ Command getCommand(std::string message) {
       return toBeReturned;
    }
 
-   std::string usersCommand = uppercase(message.substr(0,4)); // TODO - osetri, ak pride prikaz s dlzkou menej ako 4
-                                                              // TODO - moze byt aj prikaz TOP, ten ma len 3 znaky   
+   std::string usersCommand = uppercase(message.substr(0,4));
 
    if (usersCommand == "USER" && checkForSpaceAfterCommand(message)) {
       toBeReturned.name       = cmd_user;
@@ -610,7 +682,6 @@ Command getCommand(std::string message) {
          toBeReturned.firstArg = message.substr(5, message.length()-7);
          if (!isNumeric(toBeReturned.firstArg.c_str(), 10)) {
             toBeReturned.firstArg.clear();
-            // std::string arguments = message.substr(5, message.length()-7); // TODO - why is this line here?
          }
       }
    } else if (usersCommand == "LIST") {
@@ -619,7 +690,7 @@ Command getCommand(std::string message) {
          toBeReturned.firstArg = message.substr(5, message.length()-7);
          if (!isNumeric(toBeReturned.firstArg.c_str(), 10)) {
             toBeReturned.firstArg.clear();
-            std::string arguments = message.substr(5, message.length()-7); // TODO - why is this line here?
+            // std::string arguments = message.substr(5, message.length()-7); // TODO - why is this line here?
          }
       }
    } else if (usersCommand == "DELE") {
@@ -627,6 +698,8 @@ Command getCommand(std::string message) {
          toBeReturned.name    = cmd_dele;
          toBeReturned.firstArg = message.substr(5, message.length()-7);
       }
+   } else if (usersCommand == "RSET") {
+      toBeReturned.name = cmd_rset;
    } else if (usersCommand == "NOOP") {
       toBeReturned.name = cmd_noop;
    } else if (usersCommand == "QUIT") {
@@ -637,50 +710,13 @@ Command getCommand(std::string message) {
 }
 
 void printEmails(std::vector<EmailsStruct> emails) {
-   for (int i = 0; i < emails.size(); ++i) {
+   for (unsigned int i = 0; i < emails.size(); ++i) {
       std::cout << "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" << std::endl;
       std::cout << emails.at(i).fileName << std::endl;
       std::cout << emails.at(i).size << std::endl;
       std::cout << emails.at(i).toBeDeleted << std::endl;
       std::cout << emails.at(i).hash << std::endl;
    }
-}
-
-/**
- * @brief      This function formats whole message according to these rules (in this precedence):
- *                - single "\r" becomes "\r\n"
- *                - single "\n" becomes "\r\n"
- *                - "\r\n." becomes "\r\n.."
- *
- * @param[in]  toBeHandled  String to be formatted
- *
- * @return     Returns the string formatted according to 3 rules stated in brief.
- */
-std::string formatMessage(std::string toBeHandled) {
-   char prevChar = toBeHandled[0];
-   char actualChar;
-
-   for (unsigned int i = 1; i < toBeHandled.length(); ++i) {
-      actualChar = toBeHandled[i];
-      if (prevChar == '\r' && actualChar != '\n') {
-         toBeHandled.insert(i, "\n");
-         actualChar = '\n';
-      } else if (prevChar != '\r' && actualChar == '\n' ) {
-         std::cout << "mehehe" << std::endl;
-         toBeHandled.insert(i, "\r");
-         prevChar = '\r';
-         i++;
-      } else if (prevChar == '\n' && actualChar == '.') {
-         toBeHandled.insert(i,".");
-      }
-      prevChar = actualChar;
-   }
-
-   // Single '\r' at the end
-   if (toBeHandled[toBeHandled.length()-1] == '\r') {
-      toBeHandled.append("\n");
-   }
-   return toBeHandled;
 }
 
 /**
@@ -695,11 +731,11 @@ std::string formatMessage(std::string toBeHandled) {
 std::string process_message(std::string message, argumentsForThreadStructure* threadArgs) {
    
    Command actualCommand = getCommand(message);
-   std::cout << "----------------------------------------------" << std::endl;
-   std::cout << "Prisiel mi command no. " << actualCommand.name << std::endl;
-   std::cout << "Prvy argument: ------->" << actualCommand.firstArg << std::endl;
-   std::cout << "Druhy argument: ------>" << actualCommand.secondArg << std::endl;
-   std::cout << "Je zapnuta podpora prenosu hesla v nesifrovanej podobe? " << threadArgs->params->clearPass << std::endl;
+   // std::cout << "----------------------------------------------" << std::endl;
+   // std::cout << "Prisiel mi command no. " << actualCommand.name << std::endl;
+   // std::cout << "Prvy argument: ------->" << actualCommand.firstArg << std::endl;
+   // std::cout << "Druhy argument: ------>" << actualCommand.secondArg << std::endl;
+   // std::cout << "Je zapnuta podpora prenosu hesla v nesifrovanej podobe? " << threadArgs->params->clearPass << std::endl;
    std::string toBeReturned("");
    toBeReturned.clear();
 
@@ -809,8 +845,7 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
          if (actualCommand.name == cmd_stat) {
             int numberOfEmails   = 0;
             int sizeOfEmails     = 0;
-            printEmails(threadArgs->emails);
-            for (int i = 0; i < threadArgs->emails.size(); ++i) {
+            for (unsigned int i = 0; i < threadArgs->emails.size(); ++i) {
                if (!threadArgs->emails.at(i).toBeDeleted) {
                   numberOfEmails++;
                   sizeOfEmails += threadArgs->emails.at(i).size;
@@ -828,7 +863,7 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
             if (actualCommand.firstArg == "") {
                int numberOfEmails   = 0;
                int sizeOfEmails  = 0;
-               for (int i = 0; i < threadArgs->emails.size(); ++i) {
+               for (unsigned int i = 0; i < threadArgs->emails.size(); ++i) {
                   // loop for counting of size
                   if (!threadArgs->emails.at(i).toBeDeleted) {
                      // only if the email is not marked as deleted
@@ -844,7 +879,7 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                         .append("\r\n");
 
                // Vypis jednotlivych emailov pod seba
-               for (int i = 0; i < threadArgs->emails.size(); ++i) {
+               for (unsigned int i = 0; i < threadArgs->emails.size(); ++i) {
                   if (!threadArgs->emails.at(i).toBeDeleted) {
                      toBeReturned.append(to_string(i+1))
                               .append(" ")
@@ -869,14 +904,14 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                                  .append(std::to_string(threadArgs->emails.at(i_dec-1).size))
                                  .append("\r\n");
                   } else {
-                     toBeReturned.append("ERR- message not found\r\n");
+                     toBeReturned.append("-ERR message not found\r\n");
                   }
                }
             }
          } else if (actualCommand.name == cmd_uidl) {
             if (actualCommand.firstArg == "") {
                toBeReturned.append("+OK\r\n");
-               for (int i = 0; i < threadArgs->emails.size(); ++i) {
+               for (unsigned int i = 0; i < threadArgs->emails.size(); ++i) {
                   if (!threadArgs->emails.at(i).toBeDeleted) {
                      toBeReturned.append(to_string(i+1))
                                  .append(" ")
@@ -903,12 +938,12 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                                  // .append(threadArgs->emails.at(i_dec-1).hash)
                                  .append("\r\n");
                   } else {
-                     toBeReturned.append("ERR- message not found\r\n");
+                     toBeReturned.append("-ERR message not found\r\n");
                   }
                }
             }
          } else if (actualCommand.name == cmd_dele) {
-            int mailID;
+            unsigned int mailID;
             mailID = std::stoi (actualCommand.firstArg, NULL);
 
             if (mailID < 1 || mailID > threadArgs->emails.size()) {  // 0 < message id <= vectorsize
@@ -927,26 +962,37 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
             }
          } else if (actualCommand.name == cmd_retr) {
             std::string filePath = threadArgs->params->maildirPath;
-            int mailID;
+            unsigned int mailID;
             mailID = std::stoi (actualCommand.firstArg, NULL);
 
             if (mailID < 1 || mailID > threadArgs->emails.size()) {  // 0 < message id <= vectorsize
                toBeReturned.append("-ERR no such message\r\n");
             } else {
                if (!threadArgs->emails.at(mailID-1).toBeDeleted) {
-                  std::cout << "fileName..." << threadArgs->emails.at(mailID-1).fileName << std::endl;
-                  std::cout << "UIDL..." << threadArgs->emails.at(mailID-1).hash << std::endl;
+                  // std::cout << "fileName..." << threadArgs->emails.at(mailID-1).fileName << std::endl;
+                  // std::cout << "UIDL..." << threadArgs->emails.at(mailID-1).hash << std::endl;
                   filePath.append("/cur/").append(threadArgs->emails.at(mailID-1).fileName);
                   toBeReturned.append("+OK\r\n");
                   toBeReturned.append(getFileContent(filePath));
                   toBeReturned = formatMessage(toBeReturned);
-                  toBeReturned.append("\r\n.\r\n");
+                  toBeReturned.append(".\r\n"); // TODO - tu musi byt \r\n.\r\n
                } else {
                   toBeReturned.append("-ERR message ")
                               .append(actualCommand.firstArg)
                               .append(" is deleted\r\n");
                }
             }
+         } else if (actualCommand.name == cmd_rset) {
+            int bytes = 0;
+            for (unsigned int i = 0; i < threadArgs->emails.size(); ++i) {
+               threadArgs->emails.at(i).toBeDeleted = false;
+               bytes += threadArgs->emails.at(i).size;
+            }
+            toBeReturned.append("+OK maildrop has ")
+                        .append(to_string(threadArgs->emails.size()))
+                        .append(" messages (")
+                        .append(to_string(bytes))
+                        .append("octets)\r\n");
          } else if (actualCommand.name == cmd_quit) {
             threadArgs->sessionState = state_UPDATE;
             toBeReturned.append(process_message("", threadArgs));
@@ -959,10 +1005,10 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
          }
          break;
       case state_UPDATE:
-         std::cout << "Mam pristup k emailom?" << threadArgs->emails.size() << std::endl;
+         // std::cout << "Mam pristup k emailom?" << threadArgs->emails.size() << std::endl;
          bool notRemovedFlag;
          notRemovedFlag = false;
-         for (int i = 0; i < threadArgs->emails.size(); ++i) {
+         for (unsigned int i = 0; i < threadArgs->emails.size(); ++i) {
             if (threadArgs->emails.at(i).toBeDeleted) {
                std::string filePath = threadArgs->params->maildirPath;
                filePath.append("/cur/").append(threadArgs->emails.at(i).fileName);
@@ -996,7 +1042,7 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
  * @param[in]  timestamp  The timestamp sent to user to identify the thread
  */
 void deleteFromArgsVector(std::string timestamp) {
-   for (int i = 0; i < threadArgsVec.size(); ++i) {
+   for (unsigned int i = 0; i < threadArgsVec.size(); ++i) {
       if (timestamp == threadArgsVec.at(i)->timestamp) {
          delete threadArgsVec.at(i);
          threadArgsVec.erase(threadArgsVec.begin()+i);
@@ -1005,15 +1051,15 @@ void deleteFromArgsVector(std::string timestamp) {
 }
 
 void *service(void *threadid) {
-   int n, r, result, connectfd;
+   int result;
    char buf[MAX_BUFFER_SIZE];
    std::string recievedMessage("");
 
    struct argumentsForThreadStructure *my_data = (struct argumentsForThreadStructure *) threadid;
-   std::cout << my_data->timestamp << std::endl;
-   std::cout << my_data << std::endl;
+   // std::cout << my_data->timestamp << std::endl;
+   // std::cout << my_data << std::endl;
    my_data->threadID = pthread_self();
-   std::cout << "***************************\n" << my_data->threadID << "\n***************************\n" << std::endl;
+   // std::cout << "***************************\n" << my_data->threadID << "\n***************************\n" << std::endl;
    int socDescriptor = my_data->acceptedSockDes;
 
    // Initialisation of parameters for select function
@@ -1046,7 +1092,7 @@ void *service(void *threadid) {
          mtx.unlock();
          pthread_exit(NULL);
       } else if (selectResult < 0) {
-         std::cout << "Some problem with select() (" << strerror(errno) << ")" << std::endl;
+         // std::cout << "Some problem with select() (" << strerror(errno) << ")" << std::endl;
       }
 
       if (FD_ISSET(socDescriptor,&threadTempset)) {
@@ -1080,7 +1126,7 @@ void *service(void *threadid) {
       }
 
       std::string response = process_message(recievedMessage, my_data);
-      std::cout << "How long is the message?..." << response.size() << std::endl;
+      // std::cout << "How long is the message?..." << response.size() << std::endl;
       int sent = 0;
       int sent_tmp;
       int size = response.length();
@@ -1092,27 +1138,26 @@ void *service(void *threadid) {
       errno = 0;
       while (size > sent) {
          tmvl.tv_sec = 1;
-         std::cout << "Cakam na selecte" << std::endl;
+         // std::cout << "Cakam na selecte" << std::endl;
          selres = select(socDescriptor+1, NULL, &sendset, NULL, &tmvl);
-         std::cout << "Som za selectom" << std::endl;
+         // std::cout << "Som za selectom" << std::endl;
 
          if (selres < 0) {
-            std::cout << "ERROR IN SELECT WHILE SENDING" << std::endl;
+            // std::cout << "ERROR IN SELECT WHILE SENDING" << std::endl;
          }
          if (FD_ISSET(socDescriptor,&sendset)) {
             sent_tmp = write(socDescriptor, response.substr(sent, size-sent+1).c_str(), size-sent);
             if (sent_tmp != -1) {
                sent += sent_tmp;
             } else {
-               std::cout << "ohh" << std::endl;
+               // std::cout << "ohh" << std::endl;
             }
-            std::cout << "--------------------------" << std::endl;
-            std::cout << "sent_tmp..." << sent_tmp << std::endl;
-            std::cout << "sent......." << sent << std::endl;
-            std::cout << "size......." << size << std::endl;
+            // std::cout << "--------------------------" << std::endl;
+            // std::cout << "sent_tmp..." << sent_tmp << std::endl;
+            // std::cout << "sent......." << sent << std::endl;
+            // std::cout << "size......." << size << std::endl;
          }
       }
-      // std::cout << "Write returned ... " << write(socDescriptor, response.c_str(), response.size()) << std::endl;
       if (getCommand(recievedMessage).name == cmd_quit && response == "+OK\r\n") {
          deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
@@ -1139,17 +1184,17 @@ void *service(void *threadid) {
  */
 void signalHandler(int signum) {
    // TODO - mal by som overovat, ci je to SIGINT?
-	int ret;
+   (void)(signum);
 	std::map<pthread_t,int>::iterator it;
 	for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
-		std::cout << "Idem zavriet vlakno s descriptorom " << it->second << std::endl;
-		ret = close(it->second);
-		std::cout << "Podarilo sa? " << ret << std::endl;
+		// std::cout << "Idem zavriet vlakno s descriptorom " << it->second << std::endl;
+		close(it->second);
+		// std::cout << "Podarilo sa? " << ret << std::endl;
 		pthread_cancel(it->first);
 	}
-	std::cout << "Ako dopadol close na listenfd? " << close(listenfd) << std::endl;
+	// std::cout << "Ako dopadol close na listenfd? " << close(listenfd) << std::endl;
 	mtx.unlock();
-	for (int i = 0; i < threadArgsVec.size(); ++i) {
+	for (unsigned int i = 0; i < threadArgsVec.size(); ++i) {
 		delete threadArgsVec.at(i);
 	}
 	threadArgsVec.clear();
@@ -1159,9 +1204,6 @@ void signalHandler(int signum) {
 int main(int argc, char *argv[])
 {
    signal(SIGINT, signalHandler);
-   
-   std::cout << "V threadArgsVec je " << threadArgsVec.size() << " prvkov" << std::endl;
-
 
    Parameters params;
    params.authFile.clear();
@@ -1176,12 +1218,14 @@ int main(int argc, char *argv[])
       std::ifstream fin("log.txt");
       std::string line("");
       while (std::getline(fin, line)) {
+         std::string size;
          std::string from;
          std::string to;
+         getline(fin, size);
          getline(fin, to);
          getline(fin, from);
          to = SplitPath(to);
-         int ret = moveFile(from, to, "");
+         moveFile(from, to, "");
          remove(from.c_str());
       }
       remove("log.txt");
@@ -1210,7 +1254,6 @@ int main(int argc, char *argv[])
    memcpy(&server.sin_addr, hostent->h_addr, hostent->h_length);
    server.sin_port = htons((uint16_t) params.port);
 
-   printf("socket(...)\n");
    if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
       err(1, "socket()");
    }
@@ -1227,12 +1270,10 @@ int main(int argc, char *argv[])
    flags |= O_NONBLOCK;
    fcntl(listenfd, F_SETFL, flags);
 
-   printf("bind(...)\n");
    if (bind(listenfd, (struct sockaddr *)&server, sizeof(server)) == -1) {
       err(1, "bind()");
    }
 
-   printf("listen(..., %d)\n", QUEUE);
    if (listen(listenfd, QUEUE) == -1) {
       err(1, "listen()");
    }
@@ -1243,10 +1284,9 @@ int main(int argc, char *argv[])
    /**--------http://developerweb.net/viewtopic.php?id=2933-------**/
    /**------------------------------------------------------------**/
    int maxfd;
-   int peersock, j, result, result1, sent;
+   int peersock, result;
    unsigned int len;
    timeval tv;
-   char buffer[MAX_BUFFER_SIZE+1];
    sockaddr_in addr;
    std::string lastTimestamp;
 
@@ -1280,7 +1320,6 @@ int main(int argc, char *argv[])
                FD_CLR(listenfd, &tempset);
             }
 
-            // Mal by som nastavit aj priznaky pre peersock pomocou fcntl
             int flags = fcntl(peersock, F_GETFL, 0);
             if (flags < 0) {
                fprintf(stderr,"ERROR: Problem with setting socket in non blocking mode (couldn't get socket flags).\n");
@@ -1298,27 +1337,18 @@ int main(int argc, char *argv[])
             threadArgs->timestamp = lastTimestamp;
             threadArgsVec.push_back(threadArgs);
 
-            // TODO - toto by som asi mal mazat pri ukoncovani threadu
-            // mal by som to supnut aj do threadArgs, pretoze ak sa ukonci dany thread
-            // (napr. cez QUIT), tak potrebujem zrusit prislusnu dvojicu v threadSockMap
-            // inak nebudem vediet, ktora dvojica patri mojmu vlaknu a nebudem vediet, co vymazat
-            // alebo mozno aj nie? Uvidime
             pthread_t recievingThread;
-            std::cout << "~~~~~" << recievingThread << "~~~~~" << std::endl;
             int thread_ret_code;
             if ((thread_ret_code = pthread_create(&recievingThread, NULL, service, (void *)threadArgsVec.at(threadArgsVec.size()-1))) != 0) {
                   // TODO - co robit v takomto pripade?
                   // Mozno poslat pripojenemu uzivatelovi, nech sa pripoji znova a odpojit ho?
                   // Zatial vypisujem hlasku a koncim cely server
+                  // TODO - mozno by som mohol vyvolat sigint
                fprintf(stderr,"ERROR: Couldn't create new thread for new connection\n");
                exit(EXIT_FAILURE);
             }
             threadSockMap[recievingThread] = threadArgs->acceptedSockDes;
             std::map<pthread_t,int>::iterator it;
-            for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
-              std::cout << "mehehe" << it->first << " => " << it->second << std::endl;
-            }
-
             /*-----------------------*/
          }
       }      // end else if (result > 0)
