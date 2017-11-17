@@ -20,6 +20,7 @@
 #include <mutex>          // std::mutex
 #include <map>            // std::map
 #include <csignal>
+#include <errno.h>
 #include "md5.h"
 
 using namespace std;
@@ -115,7 +116,7 @@ std::mutex mtx;           // mutex for critical section
  * @brief      Function for printing help and exiting whole program
  */
 void printHelp() {      //TODO
-   std::cout << "This will be help, it's gonna be awesome" << endl;
+   std::cout << "This will be help, it's gonna be awesome" << std::endl;
    exit(EXIT_SUCCESS);
 }
 
@@ -646,24 +647,38 @@ void printEmails(std::vector<EmailsStruct> emails) {
 }
 
 /**
- * @brief      This function adds termination octet before termination octet
- *             in "\n.\r\n" or "\n.\n" substring of argument toBeHandled
+ * @brief      This function formats whole message according to these rules (in this precedence):
+ *                - single "\r" becomes "\r\n"
+ *                - single "\n" becomes "\r\n"
+ *                - "\r\n." becomes "\r\n.."
  *
- * @param[in]  toBeHandled  String to be searched for "\n.\r\n" or "\n.\n" substring
+ * @param[in]  toBeHandled  String to be formatted
  *
- * @return     Returns the converted string, from "\n.\r\n" is "\n..\r\n" and from "\n.\n" happens "\n..\n"
+ * @return     Returns the string formatted according to 3 rules stated in brief.
  */
-std::string replaceSingleDot(std::string toBeHandled) {
+std::string formatMessage(std::string toBeHandled) {
+   char prevChar = toBeHandled[0];
    char actualChar;
-   char prevPrevChar = toBeHandled[0];
-   char prevChar = toBeHandled[1];
-   for (unsigned int i = 2; i < toBeHandled.length(); ++i) {
+
+   for (unsigned int i = 1; i < toBeHandled.length(); ++i) {
       actualChar = toBeHandled[i];
-      if (prevPrevChar == '\n' && prevChar == '.' && (actualChar == '\n' || actualChar == '\r') ) {
-         toBeHandled.insert(i-1, ".");
+      if (prevChar == '\r' && actualChar != '\n') {
+         toBeHandled.insert(i, "\n");
+         actualChar = '\n';
+      } else if (prevChar != '\r' && actualChar == '\n' ) {
+         std::cout << "mehehe" << std::endl;
+         toBeHandled.insert(i, "\r");
+         prevChar = '\r';
+         i++;
+      } else if (prevChar == '\n' && actualChar == '.') {
+         toBeHandled.insert(i,".");
       }
-      prevPrevChar = prevChar;
       prevChar = actualChar;
+   }
+
+   // Single '\r' at the end
+   if (toBeHandled[toBeHandled.length()-1] == '\r') {
+      toBeHandled.append("\n");
    }
    return toBeHandled;
 }
@@ -865,7 +880,8 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                   if (!threadArgs->emails.at(i).toBeDeleted) {
                      toBeReturned.append(to_string(i+1))
                                  .append(" ")
-                                 .append(threadArgs->emails.at(i).hash)
+                                 // .append(threadArgs->emails.at(i).hash)
+                                 .append(threadArgs->emails.at(i).fileName)
                                  .append("\r\n");
                   }
                }
@@ -883,7 +899,8 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                      toBeReturned.append("+OK ")
                                  .append(actualCommand.firstArg)
                                  .append(" ")
-                                 .append(threadArgs->emails.at(i_dec-1).hash)
+                                 .append(threadArgs->emails.at(i_dec-1).fileName)
+                                 // .append(threadArgs->emails.at(i_dec-1).hash)
                                  .append("\r\n");
                   } else {
                      toBeReturned.append("ERR- message not found\r\n");
@@ -922,7 +939,7 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                   filePath.append("/cur/").append(threadArgs->emails.at(mailID-1).fileName);
                   toBeReturned.append("+OK\r\n");
                   toBeReturned.append(getFileContent(filePath));
-                  toBeReturned = replaceSingleDot(toBeReturned);
+                  toBeReturned = formatMessage(toBeReturned);
                   toBeReturned.append("\r\n.\r\n");
                } else {
                   toBeReturned.append("-ERR message ")
@@ -1064,7 +1081,38 @@ void *service(void *threadid) {
 
       std::string response = process_message(recievedMessage, my_data);
       std::cout << "How long is the message?..." << response.size() << std::endl;
-      std::cout << "Write returned ... " << write(socDescriptor, response.c_str(), response.size()) << std::endl;
+      int sent = 0;
+      int sent_tmp;
+      int size = response.length();
+      int selres;       // select result
+      fd_set sendset;
+      FD_ZERO(&sendset);
+      FD_SET(socDescriptor, &sendset);
+      // Pred tym, nez sa dostanem na write, daj select
+      errno = 0;
+      while (size > sent) {
+         tmvl.tv_sec = 1;
+         std::cout << "Cakam na selecte" << std::endl;
+         selres = select(socDescriptor+1, NULL, &sendset, NULL, &tmvl);
+         std::cout << "Som za selectom" << std::endl;
+
+         if (selres < 0) {
+            std::cout << "ERROR IN SELECT WHILE SENDING" << std::endl;
+         }
+         if (FD_ISSET(socDescriptor,&sendset)) {
+            sent_tmp = write(socDescriptor, response.substr(sent, size-sent+1).c_str(), size-sent);
+            if (sent_tmp != -1) {
+               sent += sent_tmp;
+            } else {
+               std::cout << "ohh" << std::endl;
+            }
+            std::cout << "--------------------------" << std::endl;
+            std::cout << "sent_tmp..." << sent_tmp << std::endl;
+            std::cout << "sent......." << sent << std::endl;
+            std::cout << "size......." << size << std::endl;
+         }
+      }
+      // std::cout << "Write returned ... " << write(socDescriptor, response.c_str(), response.size()) << std::endl;
       if (getCommand(recievedMessage).name == cmd_quit && response == "+OK\r\n") {
          deleteFromArgsVector(my_data->timestamp);
          FD_CLR(socDescriptor, &readset);
@@ -1268,7 +1316,7 @@ int main(int argc, char *argv[])
             threadSockMap[recievingThread] = threadArgs->acceptedSockDes;
             std::map<pthread_t,int>::iterator it;
             for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
-              std::cout << "mehehe" << it->first << " => " << it->second << '\n';
+              std::cout << "mehehe" << it->first << " => " << it->second << std::endl;
             }
 
             /*-----------------------*/
