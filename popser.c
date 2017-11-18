@@ -106,6 +106,7 @@ typedef struct cmd {
    std::string secondArg;
 } Command;
 
+Parameters params;
 std::vector<ArgsToThread*> threadArgsVec;
 std::map<pthread_t,int> threadSockMap;
 fd_set readset, tempset;
@@ -209,9 +210,7 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
       }
     }
 
-
-    if (reset && argumentsCount > 2) {
-      // std::cout << "SOM TU" << endl;
+    if (reset && (((port == -1) != (authFile == "")) != (maildirPath == ""))) {
       if (port == -1) {
          fprintf(stderr,"ERROR: Argument -p (port) is not given\n");
       } else if (authFile == "") {
@@ -1168,11 +1167,32 @@ void *service(void *threadid) {
       }
       recievedMessage.clear();
    }
-
-   // printf("clxxose(connectfd)\n");
-   // close(my_data->acceptedSockDes);
 }
 
+/**
+ * @brief      Makes a reset of server - moves all files from Maildir/cur to Maildir/tmp
+ *
+ * @return     0 on success, 1 if some error while moving files occurs
+ */
+int makeReset() {
+   std::ifstream fin("log.txt");
+   std::string line("");
+   while (std::getline(fin, line)) {
+      std::string size;
+      std::string from;
+      std::string to;
+      getline(fin, size);
+      getline(fin, to);
+      getline(fin, from);
+      to = SplitPath(to);
+      if (moveFile(from, to, "") != 0) {
+         return 1;
+      }
+      remove(from.c_str());
+   }
+   remove("log.txt");
+   return 0;
+}
 
 /**
  * @brief      Closes all connections, cancels all threads,
@@ -1185,27 +1205,34 @@ void *service(void *threadid) {
 void signalHandler(int signum) {
    // TODO - mal by som overovat, ci je to SIGINT?
    (void)(signum);
-	std::map<pthread_t,int>::iterator it;
-	for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
-		// std::cout << "Idem zavriet vlakno s descriptorom " << it->second << std::endl;
-		close(it->second);
-		// std::cout << "Podarilo sa? " << ret << std::endl;
-		pthread_cancel(it->first);
-	}
-	// std::cout << "Ako dopadol close na listenfd? " << close(listenfd) << std::endl;
-	mtx.unlock();
-	for (unsigned int i = 0; i < threadArgsVec.size(); ++i) {
-		delete threadArgsVec.at(i);
-	}
-	threadArgsVec.clear();
-	exit(0);
+   int resetret = 0;
+   std::map<pthread_t,int>::iterator it;
+   for (it=threadSockMap.begin(); it!=threadSockMap.end(); ++it) {
+      // std::cout << "Idem zavriet vlakno s descriptorom " << it->second << std::endl;
+      close(it->second);
+      // std::cout << "Podarilo sa? " << ret << std::endl;
+      pthread_cancel(it->first);
+   }
+   // std::cout << "Ako dopadol close na listenfd? " << close(listenfd) << std::endl;
+   mtx.unlock();
+   for (unsigned int i = 0; i < threadArgsVec.size(); ++i) {
+      delete threadArgsVec.at(i);
+   }
+   threadArgsVec.clear();
+
+   if (params.reset) {
+      if (resetret == 1) {
+         fprintf( stderr, "Reset was not successful");
+      }
+   }
+
+   exit(resetret);
 }
 
 int main(int argc, char *argv[])
 {
    signal(SIGINT, signalHandler);
 
-   Parameters params;
    params.authFile.clear();
    params.clearPass = false;
    params.port = 0;
@@ -1214,22 +1241,8 @@ int main(int argc, char *argv[])
 
    handleArguments(argc, argv, params.authFile, params.clearPass, params.port, params.maildirPath, params.reset);
 
-   if (params.reset) {
-      std::ifstream fin("log.txt");
-      std::string line("");
-      while (std::getline(fin, line)) {
-         std::string size;
-         std::string from;
-         std::string to;
-         getline(fin, size);
-         getline(fin, to);
-         getline(fin, from);
-         to = SplitPath(to);
-         moveFile(from, to, "");
-         remove(from.c_str());
-      }
-      remove("log.txt");
-      return 0;
+   if (params.reset && (params.authFile == "" && params.port == 0 && params.maildirPath == "")) {
+      return makeReset();
    }
 
 
