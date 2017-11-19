@@ -21,6 +21,7 @@
 #include <map>            // std::map
 #include <csignal>
 #include <errno.h>
+#include <limits.h>
 #include "md5.h"
 
 using namespace std;
@@ -118,6 +119,18 @@ std::mutex mtx;           // mutex for critical section
  */
 void printHelp() {      //TODO
    std::cout << "This will be help, it's gonna be awesome" << std::endl;
+//    Program slúži ako server pre sťahovanie elektronickej pošty pomocou protokolu POP3. Program je implementovaný pre operačný systém CentOS Linux verzie 7.4.1708.
+// Preloženie súboru je možné zadaním príkazu make.
+// Preložený program je možné spustiť nasledovne:
+//    ./popser [-h] [-a PATH] [-c] [-p PORT] [-d PATH] [-r]
+// Parametre programu majú nasledovný význam:
+// •  -h (help) - voliteľný parameter, pri jeho zadaní sa vypíše nápoveda a program sa ukončí
+// •  -c (clear pass) - voliteľný parameter, pri zadaní server akceptuje autentizačnú metódu, ktorá prenáša heslo v nešifrovanej podobe (inak prijíma iba heslá v šifrovanej podobe - hash)
+// •  -p (port) - číslo portu na ktorom bude bežať server
+// •  -d (directory) - cesta do zložky Maildir (napr. ~/Maildir/)
+// •  -r (reset) - voliteľný parameter, server vymaže všetky svoje pomocné súbory a emaily z Maildir adresárovej štruktúry vráti do stavu, ako keby proces popser nebol nikdy spustený (netýka sa časových pečiatok, iba názvov a umiestnení súborov)
+
+
    exit(EXIT_SUCCESS);
 }
 
@@ -193,7 +206,16 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
          authFile = optarg;
          break;
          case 'p':
-         port = strtol(optarg, NULL, 0);
+            char *ptr;
+            port = strtol(optarg, &ptr, 10);
+            if ((int) ptr[0] != 0) {
+               fprintf(stderr, "ERROR: Port must be an integer\n");
+               exit(EXIT_FAILURE);
+            }
+            if (port < 0) {
+               fprintf(stderr, "ERROR: Port must be positive integer\n");
+               exit(EXIT_FAILURE);
+            }
          break;
          case 'd':
          maildirPath = optarg;
@@ -210,27 +232,31 @@ void handleArguments(int argumentsCount, char** arguments, std::string &authFile
       }
     }
 
-    if (reset && (((port == -1) != (authFile == "")) != (maildirPath == ""))) {
+    if (reset && ((port == -1 && authFile == "" && maildirPath == "") || (port != -1 && authFile != "" && maildirPath != ""))) {
+      ; // ok
+    } else if (port == -1 || authFile == "" || maildirPath == "") {
       if (port == -1) {
-         fprintf(stderr,"ERROR: Argument -p (port) is not given\n");
+         fprintf(stderr,"ERROR: Parameter -p (port) is not given, use -h for further information about parameters usage\n");
       } else if (authFile == "") {
-         fprintf(stderr,"ERROR: Path to authorisation file through the parameter -a is not given\n");
+         fprintf(stderr,"ERROR: Path to authorisation file through the parameter -a is not given, use -h for further information about parameters usage\n");
       } else if (maildirPath == "") {
-         fprintf(stderr,"ERROR: Path to Maildir through the parameter -d is not given\n");
+         fprintf(stderr,"ERROR: Path to Maildir through the parameter -d is not given, use -h for further information about parameters usage\n");
       }
       exit(EXIT_FAILURE);  
-    } else if ((port == -1 || authFile == "" || maildirPath == "") && !reset) {
-      fprintf(stderr,"ERROR: Wrong parrameters, use --help for further information about parameters usage\n");
+    } 
+
+    /*else if ((port == -1 || authFile == "" || maildirPath == "") && !reset) {
+      fprintf(stderr,"ERROR: Wrong parrameters, use -h for further information about parameters usage\n");
       exit(EXIT_FAILURE);
-    }
+    }*/
 
     if (authFile != "" && fileExists(authFile) == 0) {
-      fprintf(stderr,"ERROR: authorisation file not found\n");
+      fprintf(stderr,"ERROR: Authorisation file given in parameter -a not found\n");
       exit(EXIT_FAILURE);
     }
 
     if (maildirPath != "" && directoryExists(maildirPath) == 0) {
-      fprintf(stderr,"ERROR: Maildir not found\n");
+      fprintf(stderr,"ERROR: Maildir given in parameter -d not found\n");
       exit(EXIT_FAILURE);  
     }
 }
@@ -424,6 +450,33 @@ std::string formatMessage(std::string toBeHandled) {
 }
 
 /**
+ * @brief      Gets the path to the executable including executable filename
+ *
+ * @return     The string representation of path to executable including executable filename
+ */
+std::string pathToExecutable() {
+   char buff[PATH_MAX];
+   ssize_t len = ::readlink("/proc/self/exe", buff, sizeof(buff)-1);
+   if (len != -1) {
+      buff[len] = '\0';
+      return std::string(buff);
+   }
+   return "";
+}
+
+/**
+ * @brief      Gets the absolute path to the specified log
+ *
+ * @param[in]  logFileName  The log file name
+ *
+ * @return     The absolute path to the specified log
+ */
+std::string pathToLog(std::string logFileName) {
+   std::string execDir = SplitPath(pathToExecutable());
+   return execDir+"/"+logFileName;
+}
+
+/**
  * @brief      Gets the file size from log.
  *
  * @param[in]  fileName  The file name
@@ -435,7 +488,7 @@ int getFileSizeFromLog(std::string fileName) {
    std::string fileSize("");
    std::string from("");
    std::string to("");
-   std::ifstream fin("log.txt");
+   std::ifstream fin(pathToLog("log.txt"));
    std::string::size_type sz;   // alias of size_t
    int toBeReturned;
    while (std::getline(fin, line)) {
@@ -522,7 +575,6 @@ int moveFile(std::string file, std::string dest, std::string logFileName) {
       // vznikol error pri mazani
       return 5;
    }
-
    if (logFileName != "") {
       std::string toBeWritten("");
       toBeWritten.append(fileName)
@@ -556,7 +608,7 @@ void deleteFromLog(std::string fileName) {
    std::string fileSize("");
    std::string from("");
    std::string to("");
-   std::ifstream fin("log.txt");
+   std::ifstream fin(pathToLog("log.txt"));
    while (std::getline(fin, line)) {
       getline(fin, fileSize);
       getline(fin, from);
@@ -569,7 +621,7 @@ void deleteFromLog(std::string fileName) {
       }
    }
    fin.close();
-   std::ofstream fout("log.txt");
+   std::ofstream fout(pathToLog("log.txt"));
    fout<<toBeWritten;
    fout.close();
 }
@@ -598,7 +650,7 @@ int userAuthenticated(std::vector<EmailsStruct>& emails, programParameters* para
 
       for (unsigned int i = 0; i < fileNames.size(); ++i) {
       // moving the files from new to cur
-         if ((retc = moveFile(params->maildirPath + "/new/" + fileNames.at(i), params->maildirPath + "/cur/", "log.txt")) != 0) {
+         if ((retc = moveFile(params->maildirPath + "/new/" + fileNames.at(i), params->maildirPath + "/cur/", pathToLog("log.txt"))) != 0) {
          // TODO - presun suboru nevysiel, co teraz?
             ;
          }
@@ -1175,7 +1227,7 @@ void *service(void *threadid) {
  * @return     0 on success, 1 if some error while moving files occurs
  */
 int makeReset() {
-   std::ifstream fin("log.txt");
+   std::ifstream fin(pathToLog("log.txt"));
    std::string line("");
    while (std::getline(fin, line)) {
       std::string size;
@@ -1190,7 +1242,7 @@ int makeReset() {
       }
       remove(from.c_str());
    }
-   remove("log.txt");
+   remove(pathToLog("log.txt").c_str());
    return 0;
 }
 
@@ -1221,6 +1273,7 @@ void signalHandler(int signum) {
    threadArgsVec.clear();
 
    if (params.reset) {
+      resetret = makeReset();
       if (resetret == 1) {
          fprintf( stderr, "Reset was not successful");
       }
@@ -1232,7 +1285,6 @@ void signalHandler(int signum) {
 int main(int argc, char *argv[])
 {
    signal(SIGINT, signalHandler);
-
    params.authFile.clear();
    params.clearPass = false;
    params.port = 0;
