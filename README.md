@@ -1,11 +1,10 @@
-krátký textový popis programu s případnými rozšířeními/omezeními, příklad spuštění a seznam odevzdaných souborů,
-#Popis programu
+# Popis programu
 POP3 server implementovaný v jazyku C++. Server dokáže obsluhovať viacerých klientov naraz, k Maildiru však pustí vždy len jedného.
 
-#Preloženie
+# Preloženie
 Program preložíme zadaním príkazu `make`.
 
-#Spustenie
+# Spustenie
 Príklad spustenia servera s povoleným prenosom hesla v nešifrovanej podobe na porte 1598, pričom autorizačné údaje sa nachádzajú v súbore authfile a cesta k Maildiru je xxx/Maildir. Po ukončení servera sa vykoná reset.
 ```
 ./popser -c -p 1598 -a authfile -d Maildir -r 
