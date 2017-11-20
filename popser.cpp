@@ -117,20 +117,16 @@ std::mutex mtx;           // mutex for critical section
 /**
  * @brief      Function for printing help and exiting whole program
  */
-void printHelp() {      //TODO
+void printHelp() {
    std::cout << "This will be help, it's gonna be awesome" << std::endl;
-//    Program slúži ako server pre sťahovanie elektronickej pošty pomocou protokolu POP3. Program je implementovaný pre operačný systém CentOS Linux verzie 7.4.1708.
-// Preloženie súboru je možné zadaním príkazu make.
-// Preložený program je možné spustiť nasledovne:
-//    ./popser [-h] [-a PATH] [-c] [-p PORT] [-d PATH] [-r]
-// Parametre programu majú nasledovný význam:
-// •  -h (help) - voliteľný parameter, pri jeho zadaní sa vypíše nápoveda a program sa ukončí
-// •  -c (clear pass) - voliteľný parameter, pri zadaní server akceptuje autentizačnú metódu, ktorá prenáša heslo v nešifrovanej podobe (inak prijíma iba heslá v šifrovanej podobe - hash)
-// •  -p (port) - číslo portu na ktorom bude bežať server
-// •  -d (directory) - cesta do zložky Maildir (napr. ~/Maildir/)
-// •  -r (reset) - voliteľný parameter, server vymaže všetky svoje pomocné súbory a emaily z Maildir adresárovej štruktúry vráti do stavu, ako keby proces popser nebol nikdy spustený (netýka sa časových pečiatok, iba názvov a umiestnení súborov)
-
-
+   std::cout << "POP3 server" << std::endl;
+   std::cout << "POP3 server has following parameters:" << std::endl;
+   std::cout << "    -h (help)         Print help" << std::endl;
+   std::cout << "    -a (auth file)    Path to the file containing authorisation data" << std::endl;
+   std::cout << "    -c (clear pass)   Activate support of clear password usage. If parameter -c is given, you must login using commands USER and PASS commands, otherwise you must login using APOP command." << std::endl;
+   std::cout << "    -p (port)         Port, on which will the server listen" << std::endl;
+   std::cout << "    -d (directory)    Path to Maildir directory" << std::endl;
+   std::cout << "    -r (directory)    Resets the server to the initial state (deleted files are not restored)" << std::endl;
    exit(EXIT_SUCCESS);
 }
 
@@ -1026,7 +1022,7 @@ std::string process_message(std::string message, argumentsForThreadStructure* th
                   toBeReturned.append("+OK\r\n");
                   toBeReturned.append(getFileContent(filePath));
                   toBeReturned = formatMessage(toBeReturned);
-                  toBeReturned.append(".\r\n"); // TODO - tu musi byt \r\n.\r\n
+                  toBeReturned.append("\r\n.\r\n"); // TODO - tu musi byt \r\n.\r\n
                } else {
                   toBeReturned.append("-ERR message ")
                               .append(actualCommand.firstArg)
@@ -1236,8 +1232,8 @@ int makeReset() {
       getline(fin, size);
       getline(fin, to);
       getline(fin, from);
-      to = SplitPath(to);
-      if (moveFile(from, to, "") != 0) {
+      // to = SplitPath(to);
+      if (rename(from.c_str(), to.c_str()) != 0) {
          return 1;
       }
       remove(from.c_str());
@@ -1293,7 +1289,7 @@ int main(int argc, char *argv[])
 
    handleArguments(argc, argv, params.authFile, params.clearPass, params.port, params.maildirPath, params.reset);
 
-   if (params.reset && (params.authFile == "" && params.port == 0 && params.maildirPath == "")) {
+   if (params.reset && (params.authFile == "" && params.port == -1 && params.maildirPath == "")) {
       return makeReset();
    }
 
